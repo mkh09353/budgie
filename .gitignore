@@ -1,0 +1,14 @@
+# Build output — produced by build.sh / swift build, not source.
+/Budgie.app/
+/.build/
+
+# Build prerequisites — set up per the README, not part of this repo.
+# CrispASR is its own git repo; the model is a large download.
+/CrispASR/
+/models/
+
+# SwiftPM local state
+/.swiftpm/
+
+# macOS cruft
+.DS_Store
