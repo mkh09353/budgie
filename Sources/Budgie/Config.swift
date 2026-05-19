@@ -9,8 +9,15 @@ import Foundation
 /// (e.g. running via `swift run` during development) they fall back to the
 /// original build-tree locations.
 enum Config {
-    /// Build-tree locations, used only when running outside the app bundle.
-    private static let devRoot = "/Users/maxheadley/Documents/stt"
+    /// Repo root, derived from this source file's compile-time location, used
+    /// only for the `swift run` dev fallback below. `CrispASR/` and `models/`
+    /// live inside the repo (see the README), so this resolves them wherever
+    /// the repo is checked out — no hard-coded path to go stale.
+    private static let devRoot: String = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // Sources/Budgie/
+        .deletingLastPathComponent()   // Sources/
+        .deletingLastPathComponent()   // repo root
+        .path
 
     static let binaryPath: String = {
         let bundled = Bundle.main.bundleURL
