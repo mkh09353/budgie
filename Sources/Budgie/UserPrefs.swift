@@ -59,6 +59,20 @@ enum InsertMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Which transcription backend should handle the push-to-talk session.
+enum TranscriptionMode: String, CaseIterable, Identifiable {
+    case standard, streaming
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .standard:  return "Standard"
+        case .streaming: return "Streaming"
+        }
+    }
+}
+
 /// User-changeable settings, persisted to `UserDefaults`. Distinct from
 /// `Config`, which holds fixed engine/model paths.
 final class UserPrefs: ObservableObject {
@@ -70,6 +84,9 @@ final class UserPrefs: ObservableObject {
     }
     @Published var insertMode: InsertMode {
         didSet { d.set(insertMode.rawValue, forKey: "insertMode") }
+    }
+    @Published var transcriptionMode: TranscriptionMode {
+        didSet { d.set(transcriptionMode.rawValue, forKey: "transcriptionMode") }
     }
     @Published var playSounds: Bool {
         didSet { d.set(playSounds, forKey: "playSounds") }
@@ -84,6 +101,9 @@ final class UserPrefs: ObservableObject {
     private init() {
         hotKey = HotKey(rawValue: d.string(forKey: "hotKey") ?? "") ?? .rightCommand
         insertMode = InsertMode(rawValue: d.string(forKey: "insertMode") ?? "") ?? .type
+        transcriptionMode = TranscriptionMode(
+            rawValue: d.string(forKey: "transcriptionMode") ?? ""
+        ) ?? .standard
         playSounds = d.object(forKey: "playSounds") as? Bool ?? true
         showLabel = d.bool(forKey: "showLabel")
         launchAtLogin = SMAppService.mainApp.status == .enabled

@@ -11,9 +11,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let prefs = UserPrefs.shared
     private let recorder = AudioRecorder()
     private let engine = EngineServer()
+    private let streamingEngine = StreamingTranscriber()
     private var keyMonitor: KeyMonitor?
 
     private var busy = false
+    private var recordingMode: TranscriptionMode?
+    private var streamingSessionActive = false
+    private var streamingLiveText = ""
     private let workQueue = DispatchQueue(label: "com.maxheadley.budgie.work")
     private var cancellables = Set<AnyCancellable>()
 
@@ -25,15 +29,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildStatusItem()
         buildPopover()
 
-        engine.onWarmChange = { [weak self] warm in self?.state.engineWarm = warm }
+        engine.onWarmChange = { [weak self] warm in
+            guard let self, self.prefs.transcriptionMode == .standard else { return }
+            self.state.engineWarm = warm
+        }
+        streamingEngine.onWarmChange = { [weak self] warm in
+            guard let self, self.prefs.transcriptionMode == .streaming else { return }
+            self.state.engineWarm = warm
+        }
+        streamingEngine.onPartial = { [weak self] partial in
+            self?.applyStreamingTranscript(partial)
+        }
         recorder.onLevel = { [weak self] level in self?.state.level = level }
 
         recorder.requestMicAccess()
         Permissions.ensureAccessibility()
         restartKeyMonitor()
 
-        // Start the engine now so the first dictation finds it already warm.
-        engine.warmUp()
+        // Start the selected engine now so the first dictation finds it warm.
+        activateSelectedEngine(prefs.transcriptionMode)
 
         // Redraw the menu bar icon whenever the state or live level changes.
         state.$dictation
@@ -47,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.restartKeyMonitor() }
+            .store(in: &cancellables)
+
+        prefs.$transcriptionMode
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mode in self?.activateSelectedEngine(mode) }
             .store(in: &cancellables)
 
         // The menu bar label is opt-in and can be toggled live.
@@ -67,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         engine.shutdown()
+        streamingEngine.shutdown(wait: true)
     }
 
     // MARK: - Menu bar item & popover
@@ -192,10 +213,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func activateSelectedEngine(_ mode: TranscriptionMode) {
+        state.engineWarm = false
+        switch mode {
+        case .standard:
+            streamingEngine.shutdown()
+            engine.warmUp()
+        case .streaming:
+            engine.shutdown()
+            streamingEngine.warmUp()
+        }
+    }
+
     // MARK: - Dictation flow
 
     private func startRecording() {
         guard !busy else { return }
+        let mode = prefs.transcriptionMode
+        recordingMode = mode
+        if mode == .streaming {
+            streamingSessionActive = true
+            streamingLiveText = ""
+            streamingEngine.beginSession()
+            recorder.onBuffer = { [weak self] buffer in
+                self?.streamingEngine.append(buffer)
+            }
+        } else {
+            recorder.onBuffer = nil
+        }
         recorder.start()
         state.recordingStarted = Date()
         state.dictation = .recording
@@ -209,7 +254,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let recordingDuration = state.recordingStarted
             .map { Date().timeIntervalSince($0) } ?? 0
         state.recordingStarted = nil
-        guard let wav = recorder.stop() else {
+        let mode = recordingMode ?? prefs.transcriptionMode
+        recordingMode = nil
+        let wav = recorder.stop(shouldWriteWav: mode == .standard)
+        recorder.onBuffer = nil
+
+        guard recordingDuration >= Config.minRecordingSeconds else {
+            if mode == .streaming { streamingEngine.cancelSession() }
+            streamingSessionActive = false
+            streamingLiveText = ""
+            state.dictation = .idle
+            return
+        }
+        if mode == .standard, wav == nil {
             state.dictation = .idle
             return
         }
@@ -221,21 +278,107 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         workQueue.async { [weak self] in
             guard let self else { return }
-            let text = self.engine.transcribe(wav)
-            try? FileManager.default.removeItem(at: wav)
+            let text: String
+            let errorMessage: String?
+            switch mode {
+            case .standard:
+                text = wav.map { self.engine.transcribe($0) } ?? ""
+                errorMessage = nil
+            case .streaming:
+                do {
+                    text = try self.streamingEngine.finish()
+                    errorMessage = nil
+                } catch {
+                    NSLog("Budgie: streaming transcription failed: \(error)")
+                    text = ""
+                    errorMessage = self.streamingErrorMessage(error)
+                }
+            }
+            if let wav { try? FileManager.default.removeItem(at: wav) }
             let latency = Date().timeIntervalSince(startedAt)
 
             DispatchQueue.main.async {
                 self.busy = false
                 self.stopTranscribeAnimation()
+                if let errorMessage {
+                    self.streamingSessionActive = false
+                    self.state.dictation = .error(errorMessage)
+                    return
+                }
                 self.state.dictation = .idle
-                guard !text.isEmpty else { return }
-                self.deliver(text)
-                self.state.didFinish(text, latency: latency,
+                let finalText = mode == .streaming && text.isEmpty
+                    ? self.streamingLiveText
+                    : text
+                guard !finalText.isEmpty else {
+                    self.streamingSessionActive = false
+                    self.streamingLiveText = ""
+                    return
+                }
+                if mode == .streaming {
+                    self.applyStreamingTranscript(finalText)
+                    self.streamingSessionActive = false
+                    self.streamingLiveText = ""
+                } else {
+                    self.deliver(finalText)
+                }
+                self.state.didFinish(finalText, latency: latency,
                                      recordingDuration: recordingDuration)
                 if self.prefs.playSounds { NSSound(named: "Pop")?.play() }
             }
         }
+    }
+
+    private func streamingErrorMessage(_ error: Error) -> String {
+        if let error = error as? StreamingTranscriberError {
+            switch error {
+            case .modelDirectoryMissing:
+                return "Install the Streaming model in models/nemotron_coreml_560ms."
+            case .notLoaded:
+                break
+            }
+        }
+        return "Streaming transcription failed."
+    }
+
+    private func applyStreamingTranscript(_ text: String) {
+        guard streamingSessionActive else { return }
+        let transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return }
+
+        switch prefs.insertMode {
+        case .type:
+            replaceTypedStreamingText(with: transcript)
+        case .clipboard:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(transcript, forType: .string)
+            streamingLiveText = transcript
+        }
+    }
+
+    private func replaceTypedStreamingText(with transcript: String) {
+        let sharedPrefix = commonPrefixLength(streamingLiveText, transcript)
+        let oldTail = streamingLiveText.dropFirst(sharedPrefix)
+        let newTail = transcript.dropFirst(sharedPrefix)
+
+        if !oldTail.isEmpty {
+            TextInserter.deleteBackward(oldTail.count)
+        }
+        if !newTail.isEmpty {
+            TextInserter.type(String(newTail))
+        }
+        streamingLiveText = transcript
+    }
+
+    private func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
+        var count = 0
+        var left = lhs.startIndex
+        var right = rhs.startIndex
+        while left < lhs.endIndex, right < rhs.endIndex, lhs[left] == rhs[right] {
+            count += 1
+            left = lhs.index(after: left)
+            right = rhs.index(after: right)
+        }
+        return count
     }
 
     /// Routes the finished transcript according to the user's chosen mode.

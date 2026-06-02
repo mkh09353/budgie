@@ -26,6 +26,13 @@ struct PreferencesView: View {
 private struct GeneralTab: View {
     @ObservedObject var prefs: UserPrefs
 
+    private var streamingMode: Binding<Bool> {
+        Binding(
+            get: { prefs.transcriptionMode == .streaming },
+            set: { prefs.transcriptionMode = $0 ? .streaming : .standard }
+        )
+    }
+
     var body: some View {
         Form {
             Picker("When dictation finishes:", selection: $prefs.insertMode) {
@@ -35,6 +42,7 @@ private struct GeneralTab: View {
 
             Divider().padding(.vertical, 4)
 
+            Toggle("Streaming mode", isOn: streamingMode)
             Toggle("Play a sound when text is ready", isOn: $prefs.playSounds)
             Toggle("Show a text label in the menu bar", isOn: $prefs.showLabel)
             Toggle("Launch Budgie at login", isOn: $prefs.launchAtLogin)
@@ -167,7 +175,7 @@ private struct AboutTab: View {
                 .foregroundStyle(.tint)
             Text("Budgie").font(.system(size: 18, weight: .semibold))
             Text(version).font(.system(size: 11)).foregroundStyle(.secondary)
-            Text("Push-to-talk dictation that runs fully offline\non the CrispASR (Parakeet) engine.")
+            Text("Push-to-talk dictation that runs fully offline\non local Parakeet speech engines.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

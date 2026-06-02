@@ -21,12 +21,32 @@ enum TextInserter {
         }
     }
 
+    static func deleteBackward(_ count: Int) {
+        guard count > 0 else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        for _ in 0..<count {
+            postKey(51, source: source)
+            usleep(1_500)
+        }
+    }
+
     private static func post(_ chunk: [UniChar], source: CGEventSource?) {
         var chars = chunk
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return }
+        keyDown.flags = []
+        keyUp.flags = []
         keyDown.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
         keyUp.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    private static func postKey(_ virtualKey: CGKeyCode, source: CGEventSource?) {
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else { return }
+        keyDown.flags = []
+        keyUp.flags = []
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
     }

@@ -5,6 +5,8 @@ import AVFoundation
 final class AudioRecorder {
     /// Called on the main thread with a live input level (0...1) while recording.
     var onLevel: ((Float) -> Void)?
+    /// Called from the audio tap with each captured buffer.
+    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
 
     private let engine = AVAudioEngine()
     private let lock = NSLock()
@@ -33,6 +35,7 @@ final class AudioRecorder {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, let copy = buffer.copy() as? AVAudioPCMBuffer else { return }
             self.lock.lock(); self.buffers.append(copy); self.lock.unlock()
+            self.onBuffer?(copy)
             self.reportLevel(of: buffer)
         }
 
@@ -46,7 +49,7 @@ final class AudioRecorder {
     }
 
     /// Stops capture and returns the WAV file URL, or nil if nothing usable.
-    func stop() -> URL? {
+    func stop(shouldWriteWav: Bool = true) -> URL? {
         guard recording else { return nil }
         recording = false
         engine.inputNode.removeTap(onBus: 0)
@@ -54,6 +57,7 @@ final class AudioRecorder {
 
         lock.lock(); let captured = buffers; buffers.removeAll(); lock.unlock()
         DispatchQueue.main.async { self.onLevel?(0) }
+        guard shouldWriteWav else { return nil }
         return writeWav(from: captured)
     }
 

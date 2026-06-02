@@ -5,7 +5,9 @@
 #   Contents/MacOS/Budgie           the Swift menu-bar app
 #   Contents/MacOS/crispasr         the ASR engine binary
 #   Contents/Frameworks/*.dylib     the engine's shared libraries
-#   Contents/Resources/*.gguf       the speech model (~488 MB)
+#   Contents/Resources/*.gguf       the standard speech model (~488 MB)
+#   Contents/Resources/nemotron_coreml_560ms/
+#                                      the streaming Core ML model
 #
 # The engine binary and its dylibs are built with absolute rpaths pointing at
 # the build tree; this script rewrites them to @executable_path / @loader_path
@@ -22,9 +24,22 @@ APP="Budgie.app"
 # The engine checkout and the model live inside the repo (git-ignored — see
 # README "Building from source"), so a fresh clone is self-contained.
 REPO_ROOT="$(pwd)"
-CRISP_BUILD="${REPO_ROOT}/CrispASR/build"
-MODEL="${REPO_ROOT}/models/parakeet-tdt-0.6b-v3-q4_k.gguf"
+CRISP_BUILD="${CRISP_BUILD:-${REPO_ROOT}/CrispASR/build}"
+MODEL="${MODEL:-${REPO_ROOT}/models/parakeet-tdt-0.6b-v3-q4_k.gguf}"
+STREAMING_MODEL="${STREAMING_MODEL:-${REPO_ROOT}/models/nemotron_coreml_560ms}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-MacBird Development}"
+
+if [[ ! -f "${MODEL}" ]]; then
+  echo "Missing standard model: ${MODEL}" >&2
+  echo "Run the README's standard model download step first." >&2
+  exit 1
+fi
+
+if [[ ! -d "${STREAMING_MODEL}" ]]; then
+  echo "Missing streaming model: ${STREAMING_MODEL}" >&2
+  echo "Run the README's Streaming model download step first." >&2
+  exit 1
+fi
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/budgie-build.XXXXXX")"
 trap 'rm -rf "${STAGE}"' EXIT
@@ -44,13 +59,13 @@ MACOS="${BUNDLE}/Contents/MacOS"
 FW="${BUNDLE}/Contents/Frameworks"
 RES="${BUNDLE}/Contents/Resources"
 mkdir -p "${MACOS}" "${FW}" "${RES}"
-cp .build/release/Budgie "${MACOS}/Budgie"
-cp Info.plist             "${BUNDLE}/Contents/Info.plist"
+ditto .build/release/Budgie "${MACOS}/Budgie"
+ditto Info.plist             "${BUNDLE}/Contents/Info.plist"
 
 # ---------------------------------------------------------------------------
 # 3. Copy the engine binary, its dylibs and the model into the bundle
 # ---------------------------------------------------------------------------
-cp "${CRISP_BUILD}/bin/crispasr" "${MACOS}/crispasr"
+ditto "${CRISP_BUILD}/bin/crispasr" "${MACOS}/crispasr"
 
 # Real dylib files (the versioned ones the symlinks point at).
 DYLIBS=(
@@ -62,7 +77,7 @@ DYLIBS=(
   "${CRISP_BUILD}/ggml/src/ggml-metal/libggml-metal.0.10.2.dylib"
 )
 for d in "${DYLIBS[@]}"; do
-  cp "$d" "${FW}/"
+  ditto "$d" "${FW}/$(basename "$d")"
 done
 
 # Recreate the version symlinks flat inside Frameworks/ so the @rpath install
@@ -84,7 +99,10 @@ done
 )
 
 echo "Copying model ($(du -h "${MODEL}" | cut -f1))..."
-cp "${MODEL}" "${RES}/"
+ditto "${MODEL}" "${RES}/$(basename "${MODEL}")"
+
+echo "Copying streaming model ($(du -sh "${STREAMING_MODEL}" | cut -f1))..."
+ditto "${STREAMING_MODEL}" "${RES}/nemotron_coreml_560ms"
 
 # ---------------------------------------------------------------------------
 # 4. Rewrite rpaths so the engine finds its dylibs inside the bundle

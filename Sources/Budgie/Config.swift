@@ -1,13 +1,13 @@
 import Foundation
 
-/// Paths to the CrispASR engine and model.
+/// Paths to the local speech engines and models.
 ///
-/// `build.sh` bundles the `crispasr` binary, its dylibs and the model inside
-/// `Budgie.app` and rewrites the engine's rpaths to `@executable_path`, so the
-/// app is self-contained and runs on any Apple-silicon Mac. These properties
-/// resolve to the bundled copies at runtime; when the bundled files are absent
-/// (e.g. running via `swift run` during development) they fall back to the
-/// original build-tree locations.
+/// `build.sh` bundles the `crispasr` binary, its dylibs, the standard GGUF
+/// model and the streaming Core ML model inside `Budgie.app`, then rewrites the
+/// engine's rpaths to `@executable_path`, so the app is self-contained. These
+/// properties resolve to the bundled copies at runtime; when the bundled files
+/// are absent (e.g. running via `swift run` during development) they fall back
+/// to the original build-tree locations.
 enum Config {
     /// Repo root, derived from this source file's compile-time location, used
     /// only for the `swift run` dev fallback below. `CrispASR/` and `models/`
@@ -33,6 +33,17 @@ enum Config {
             return bundled.path
         }
         return "\(devRoot)/models/parakeet-tdt-0.6b-v3-q4_k.gguf"
+    }()
+
+    static let streamingModelDirectoryName = "nemotron_coreml_560ms"
+
+    static let streamingModelDirectoryPath: String = {
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent(streamingModelDirectoryName, isDirectory: true),
+           FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled.path
+        }
+        return "\(devRoot)/models/\(streamingModelDirectoryName)"
     }()
 
     static let backend = "parakeet"

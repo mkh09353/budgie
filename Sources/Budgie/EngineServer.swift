@@ -41,6 +41,7 @@ final class EngineServer {
     func warmUp() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self, self.ensureRunning() else { return }
+            DispatchQueue.main.async { self.onWarmChange?(true) }
             // Don't sit at ~700 MB forever if the user never dictates.
             self.scheduleIdleShutdown()
         }
