@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let state = AppState()
     private let prefs = UserPrefs.shared
     private let recorder = AudioRecorder()
-    private let engine = EngineServer()
+    private let engine = StandardTranscriber()
     private let streamingEngine = StreamingTranscriber()
     private var keyMonitor: KeyMonitor?
 
@@ -338,7 +338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .notLoaded:
                 break
             case .contextLoadFailed, .streamStartFailed, .streamFeedFailed,
-                 .streamFinalizeFailed, .resampleFailed, .invalidPCMBuffer:
+                 .streamFinalizeFailed, .transcribeFailed, .resampleFailed,
+                 .invalidPCMBuffer:
                 break
             }
         }

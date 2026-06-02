@@ -11,6 +11,7 @@ enum StreamingTranscriberError: LocalizedError {
     case streamStartFailed(String)
     case streamFeedFailed(String)
     case streamFinalizeFailed(String)
+    case transcribeFailed(String)
     case resampleFailed(String)
     case invalidPCMBuffer
     case notLoaded
@@ -33,6 +34,8 @@ enum StreamingTranscriberError: LocalizedError {
             return "Streaming feed failed: \(message)"
         case .streamFinalizeFailed(let message):
             return "Streaming finalize failed: \(message)"
+        case .transcribeFailed(let message):
+            return "Transcription failed: \(message)"
         case .resampleFailed(let message):
             return "Audio resample failed: \(message)"
         case .invalidPCMBuffer:
@@ -265,10 +268,19 @@ final class StreamingTranscriber: @unchecked Sendable {
     }
 }
 
-private final class ParakeetLibrary {
+/// dlopen wrapper around parakeet.cpp's flat C API. Shared by the streaming
+/// engine (`StreamingTranscriber`) and the one-shot engine
+/// (`StandardTranscriber`); both load the same `libparakeet.dylib` and reuse
+/// these typed symbols.
+final class ParakeetLibrary {
     typealias AbiVersion = @convention(c) () -> CInt
     typealias Load = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?
     typealias Free = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    typealias TranscribePath = @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafePointer<CChar>?,
+        CInt
+    ) -> UnsafeMutablePointer<CChar>?
     typealias StreamBegin = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
     typealias StreamFeed = @convention(c) (
         UnsafeMutableRawPointer?,
@@ -284,6 +296,7 @@ private final class ParakeetLibrary {
     let handle: UnsafeMutableRawPointer
     let load: Load
     let free: Free
+    let transcribePath: TranscribePath
     let streamBegin: StreamBegin
     let streamFeed: StreamFeed
     let streamFinalize: StreamFinalize
@@ -312,6 +325,7 @@ private final class ParakeetLibrary {
             self.handle = opened
             self.load = try Self.symbol("parakeet_capi_load", from: opened)
             self.free = try Self.symbol("parakeet_capi_free", from: opened)
+            self.transcribePath = try Self.symbol("parakeet_capi_transcribe_path", from: opened)
             self.streamBegin = try Self.symbol("parakeet_capi_stream_begin", from: opened)
             self.streamFeed = try Self.symbol("parakeet_capi_stream_feed", from: opened)
             self.streamFinalize = try Self.symbol("parakeet_capi_stream_finalize", from: opened)
@@ -341,7 +355,7 @@ private final class ParakeetLibrary {
     }
 }
 
-private final class ParakeetContext {
+final class ParakeetContext {
     let library: ParakeetLibrary
     let pointer: UnsafeMutableRawPointer
 
@@ -361,6 +375,18 @@ private final class ParakeetContext {
         guard let message = library.lastError(pointer) else { return "unknown error" }
         let text = String(cString: message)
         return text.isEmpty ? "unknown error" : text
+    }
+
+    /// One-shot transcription of a WAV file. `decoder` 0 lets parakeet.cpp pick
+    /// the head by architecture (the transducer for the TDT model).
+    func transcribe(wavPath: String, decoder: CInt = 0) throws -> String {
+        guard let result = wavPath.withCString({
+            library.transcribePath(pointer, $0, decoder)
+        }) else {
+            throw StreamingTranscriberError.transcribeFailed(lastErrorMessage)
+        }
+        defer { library.freeString(result) }
+        return String(cString: result)
     }
 }
 
