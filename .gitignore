@@ -3,8 +3,10 @@
 /.build/
 
 # Build prerequisites — set up per the README, not part of this repo.
-# CrispASR is its own git repo; the model is a large download.
+# CrispASR and ParakeetCpp are their own git repos; models are large downloads.
 /CrispASR/
+/ParakeetCpp/
+/parakeet.cpp/
 /models/
 
 # SwiftPM local state

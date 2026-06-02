@@ -4,10 +4,10 @@
 # The bundle embeds everything needed to run on any Apple-silicon Mac:
 #   Contents/MacOS/Budgie           the Swift menu-bar app
 #   Contents/MacOS/crispasr         the ASR engine binary
-#   Contents/Frameworks/*.dylib     the engine's shared libraries
+#   Contents/Frameworks/*.dylib     the standard engine's shared libraries
+#   Contents/Frameworks/Parakeet/   the parakeet.cpp streaming C library
 #   Contents/Resources/*.gguf       the standard speech model (~488 MB)
-#   Contents/Resources/nemotron_coreml_560ms/
-#                                      the streaming Core ML model
+#   Contents/Resources/*.gguf       the streaming speech model
 #
 # The engine binary and its dylibs are built with absolute rpaths pointing at
 # the build tree; this script rewrites them to @executable_path / @loader_path
@@ -24,9 +24,11 @@ APP="Budgie.app"
 # The engine checkout and the model live inside the repo (git-ignored — see
 # README "Building from source"), so a fresh clone is self-contained.
 REPO_ROOT="$(pwd)"
+APP_OUTPUT_DIR="${APP_OUTPUT_DIR:-${REPO_ROOT}}"
 CRISP_BUILD="${CRISP_BUILD:-${REPO_ROOT}/CrispASR/build}"
+PARAKEET_BUILD="${PARAKEET_BUILD:-${REPO_ROOT}/ParakeetCpp/build-shared}"
 MODEL="${MODEL:-${REPO_ROOT}/models/parakeet-tdt-0.6b-v3-q4_k.gguf}"
-STREAMING_MODEL="${STREAMING_MODEL:-${REPO_ROOT}/models/nemotron_coreml_560ms}"
+STREAMING_MODEL="${STREAMING_MODEL:-${REPO_ROOT}/models/realtime_eou_120m-v1-q8_0.gguf}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-MacBird Development}"
 
 if [[ ! -f "${MODEL}" ]]; then
@@ -35,9 +37,15 @@ if [[ ! -f "${MODEL}" ]]; then
   exit 1
 fi
 
-if [[ ! -d "${STREAMING_MODEL}" ]]; then
+if [[ ! -f "${PARAKEET_BUILD}/libparakeet.dylib" ]]; then
+  echo "Missing parakeet.cpp library: ${PARAKEET_BUILD}/libparakeet.dylib" >&2
+  echo "Run the README's parakeet.cpp build step first." >&2
+  exit 1
+fi
+
+if [[ ! -f "${STREAMING_MODEL}" ]]; then
   echo "Missing streaming model: ${STREAMING_MODEL}" >&2
-  echo "Run the README's Streaming model download step first." >&2
+  echo "Run the README's Streaming model conversion step first." >&2
   exit 1
 fi
 
@@ -57,13 +65,14 @@ swift build -c release
 echo "Assembling ${APP}..."
 MACOS="${BUNDLE}/Contents/MacOS"
 FW="${BUNDLE}/Contents/Frameworks"
+PKFW="${FW}/Parakeet"
 RES="${BUNDLE}/Contents/Resources"
-mkdir -p "${MACOS}" "${FW}" "${RES}"
+mkdir -p "${MACOS}" "${FW}" "${PKFW}" "${RES}"
 ditto .build/release/Budgie "${MACOS}/Budgie"
 ditto Info.plist             "${BUNDLE}/Contents/Info.plist"
 
 # ---------------------------------------------------------------------------
-# 3. Copy the engine binary, its dylibs and the model into the bundle
+# 3. Copy the engine binaries, dylibs and models into the bundle
 # ---------------------------------------------------------------------------
 ditto "${CRISP_BUILD}/bin/crispasr" "${MACOS}/crispasr"
 
@@ -78,6 +87,33 @@ DYLIBS=(
 )
 for d in "${DYLIBS[@]}"; do
   ditto "$d" "${FW}/$(basename "$d")"
+done
+
+PARAKEET_DYLIBS=()
+while IFS= read -r d; do
+  PARAKEET_DYLIBS+=("$d")
+done < <(find "${PARAKEET_BUILD}" -name '*.dylib' \( -type f -o -type l \) | sort)
+
+if [[ ${#PARAKEET_DYLIBS[@]} -eq 0 ]]; then
+  echo "No parakeet.cpp dylibs found in ${PARAKEET_BUILD}" >&2
+  exit 1
+fi
+
+PARAKEET_BUNDLED_DYLIBS=()
+PARAKEET_BUNDLED_DYLIB_REFS=()
+for d in "${PARAKEET_DYLIBS[@]}"; do
+  target="${PKFW}/$(basename "$d")"
+  if [[ -L "$d" ]]; then
+    link_target="$(readlink "$d")"
+    if [[ "$link_target" == /* ]]; then
+      link_target="$(basename "$link_target")"
+    fi
+    ln -sf "$link_target" "$target"
+  else
+    ditto "$d" "$target"
+    PARAKEET_BUNDLED_DYLIBS+=("$target")
+  fi
+  PARAKEET_BUNDLED_DYLIB_REFS+=("$target")
 done
 
 # Recreate the version symlinks flat inside Frameworks/ so the @rpath install
@@ -101,8 +137,8 @@ done
 echo "Copying model ($(du -h "${MODEL}" | cut -f1))..."
 ditto "${MODEL}" "${RES}/$(basename "${MODEL}")"
 
-echo "Copying streaming model ($(du -sh "${STREAMING_MODEL}" | cut -f1))..."
-ditto "${STREAMING_MODEL}" "${RES}/nemotron_coreml_560ms"
+echo "Copying streaming model ($(du -h "${STREAMING_MODEL}" | cut -f1))..."
+ditto "${STREAMING_MODEL}" "${RES}/$(basename "${STREAMING_MODEL}")"
 
 # ---------------------------------------------------------------------------
 # 4. Rewrite rpaths so the engine finds its dylibs inside the bundle
@@ -113,6 +149,22 @@ strip_rpaths() {
   while otool -l "$file" | grep -q LC_RPATH; do
     rp=$(otool -l "$file" | awk '/LC_RPATH/{getline;getline;print $2;exit}')
     install_name_tool -delete_rpath "$rp" "$file" 2>/dev/null || break
+  done
+}
+
+rewrite_local_dylib_refs() {
+  local file="$1" dep base linked
+  shift
+  for dep in "$@"; do
+    base="$(basename "$dep")"
+    while IFS= read -r linked; do
+      if [[ "$(basename "$linked")" == "$base" &&
+            "$linked" != @* &&
+            "$linked" != /usr/lib/* &&
+            "$linked" != /System/* ]]; then
+        install_name_tool -change "$linked" "@rpath/$base" "$file" 2>/dev/null || true
+      fi
+    done < <(otool -L "$file" | awk 'NR > 1 { print $1 }')
   done
 }
 
@@ -131,6 +183,18 @@ for d in "${DYLIBS[@]}"; do
   install_name_tool -add_rpath "@loader_path" "$f"
 done
 
+# parakeet.cpp's dylibs live in their own folder so any ggml dylibs it emits
+# cannot collide with the older CrispASR ggml dylibs used by standard mode.
+for f in "${PARAKEET_BUNDLED_DYLIBS[@]}"; do
+  chmod u+w "$f"
+  strip_rpaths "$f"
+  install_name_tool -id "@rpath/$(basename "$f")" "$f" 2>/dev/null || true
+  install_name_tool -add_rpath "@loader_path" "$f"
+done
+for f in "${PARAKEET_BUNDLED_DYLIBS[@]}"; do
+  rewrite_local_dylib_refs "$f" "${PARAKEET_BUNDLED_DYLIB_REFS[@]}"
+done
+
 # ---------------------------------------------------------------------------
 # 5. Sign — nested Mach-O files first, then the bundle.
 # ---------------------------------------------------------------------------
@@ -141,6 +205,9 @@ xattr -cr "${BUNDLE}"
 for d in "${DYLIBS[@]}"; do
   codesign --force --sign "${SIGN_IDENTITY}" "${FW}/$(basename "$d")"
 done
+for f in "${PARAKEET_BUNDLED_DYLIBS[@]}"; do
+  codesign --force --sign "${SIGN_IDENTITY}" "$f"
+done
 codesign --force --sign "${SIGN_IDENTITY}" "${MACOS}/crispasr"
 codesign --force --sign "${SIGN_IDENTITY}" "${BUNDLE}"
 
@@ -150,8 +217,17 @@ codesign --verify --deep --strict "${BUNDLE}"
 # ---------------------------------------------------------------------------
 # 6. Move the finished, signed bundle into place
 # ---------------------------------------------------------------------------
-rm -rf "${APP}"
-ditto "${BUNDLE}" "${APP}"
+mkdir -p "${APP_OUTPUT_DIR}"
+DEST_APP="${APP_OUTPUT_DIR}/${APP}"
+rm -rf "${DEST_APP}"
+ditto "${BUNDLE}" "${DEST_APP}"
 
-echo "Done -> $(pwd)/${APP}  ($(du -sh "${APP}" | cut -f1), self-contained)"
-echo "Launch it with:  open ${APP}"
+# If the destination is iCloud-synced, FinderInfo/provenance xattrs can appear
+# after the temp-stage signature check. Clear what can be cleared and verify the
+# final app that will actually be launched.
+xattr -cr "${DEST_APP}" 2>/dev/null || true
+echo "Verifying final bundle..."
+codesign --verify --deep --strict "${DEST_APP}"
+
+echo "Done -> ${DEST_APP}  ($(du -sh "${DEST_APP}" | cut -f1), self-contained)"
+echo "Launch it with:  open ${DEST_APP}"

@@ -331,9 +331,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func streamingErrorMessage(_ error: Error) -> String {
         if let error = error as? StreamingTranscriberError {
             switch error {
-            case .modelDirectoryMissing:
-                return "Install the Streaming model in models/nemotron_coreml_560ms."
+            case .libraryMissing, .libraryLoadFailed, .symbolMissing:
+                return "Build parakeet.cpp in ParakeetCpp/build-shared."
+            case .modelFileMissing:
+                return "Install the Streaming model in models/realtime_eou_120m-v1-q8_0.gguf."
             case .notLoaded:
+                break
+            case .contextLoadFailed, .streamStartFailed, .streamFeedFailed,
+                 .streamFinalizeFailed, .resampleFailed, .invalidPCMBuffer:
                 break
             }
         }

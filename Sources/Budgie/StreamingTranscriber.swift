@@ -1,32 +1,68 @@
 import AVFoundation
-import CoreML
-import FluidAudio
+import Darwin
 import Foundation
 
 enum StreamingTranscriberError: LocalizedError {
-    case modelDirectoryMissing(String)
+    case libraryMissing(String)
+    case libraryLoadFailed(String, String)
+    case symbolMissing(String)
+    case modelFileMissing(String)
+    case contextLoadFailed(String)
+    case streamStartFailed(String)
+    case streamFeedFailed(String)
+    case streamFinalizeFailed(String)
+    case resampleFailed(String)
+    case invalidPCMBuffer
     case notLoaded
 
     var errorDescription: String? {
         switch self {
-        case .modelDirectoryMissing(let path):
+        case .libraryMissing(let path):
+            return "parakeet.cpp library missing at \(path)"
+        case .libraryLoadFailed(let path, let message):
+            return "Could not load parakeet.cpp library at \(path): \(message)"
+        case .symbolMissing(let name):
+            return "parakeet.cpp library is missing \(name)"
+        case .modelFileMissing(let path):
             return "Streaming model missing at \(path)"
+        case .contextLoadFailed(let message):
+            return "Could not load streaming model: \(message)"
+        case .streamStartFailed(let message):
+            return "Could not start streaming session: \(message)"
+        case .streamFeedFailed(let message):
+            return "Streaming feed failed: \(message)"
+        case .streamFinalizeFailed(let message):
+            return "Streaming finalize failed: \(message)"
+        case .resampleFailed(let message):
+            return "Audio resample failed: \(message)"
+        case .invalidPCMBuffer:
+            return "Audio buffer did not contain float PCM"
         case .notLoaded:
             return "Streaming engine is not loaded"
         }
     }
 }
 
-/// Keeps FluidAudio's Nemotron streaming model loaded and feeds it buffers in
-/// the same order the microphone tap produced them.
+/// Keeps parakeet.cpp's C library loaded and feeds cache-aware streaming
+/// sessions with 16 kHz mono float PCM.
 final class StreamingTranscriber: @unchecked Sendable {
     var onWarmChange: ((Bool) -> Void)?
     var onPartial: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "com.maxheadley.budgie.streaming")
-    private var manager: StreamingNemotronAsrManager?
+    private let streamFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 16_000,
+        channels: 1,
+        interleaved: false
+    )!
+
+    private var library: ParakeetLibrary?
+    private var context: ParakeetContext?
+    private var stream: ParakeetStreamSession?
     private var loaded = false
     private var pendingError: Error?
+    private var runningTranscript = ""
 
     func warmUp() {
         queue.async {
@@ -43,15 +79,12 @@ final class StreamingTranscriber: @unchecked Sendable {
     func beginSession() {
         queue.async {
             self.pendingError = nil
+            self.runningTranscript = ""
             do {
                 try self.ensureLoaded()
-                guard let manager = self.manager else { throw StreamingTranscriberError.notLoaded }
-                try self.waitForAsync {
-                    await manager.reset()
-                    await manager.setPartialCallback { [weak self] partial in
-                        self?.emitPartial(partial)
-                    }
-                }
+                guard let context = self.context else { throw StreamingTranscriberError.notLoaded }
+                self.stream?.free()
+                self.stream = try ParakeetStreamSession(context: context)
             } catch {
                 self.pendingError = error
                 self.setWarm(false)
@@ -66,8 +99,11 @@ final class StreamingTranscriber: @unchecked Sendable {
             guard self.pendingError == nil else { return }
             do {
                 try self.ensureLoaded()
-                guard let manager = self.manager else { throw StreamingTranscriberError.notLoaded }
-                _ = try self.waitForAsync { try await manager.process(audioBuffer: copy) }
+                guard let stream = self.stream else { throw StreamingTranscriberError.notLoaded }
+                let samples = try self.pcm16kMono(from: copy)
+                guard !samples.isEmpty else { return }
+                let delta = try stream.feed(samples)
+                self.appendTranscriptDelta(delta)
             } catch {
                 self.pendingError = error
                 NSLog("Budgie: streaming chunk failed: \(error)")
@@ -84,10 +120,14 @@ final class StreamingTranscriber: @unchecked Sendable {
             do {
                 if let pendingError = self.pendingError { throw pendingError }
                 try self.ensureLoaded()
-                guard let manager = self.manager else { throw StreamingTranscriberError.notLoaded }
-                let transcript = try self.waitForAsync { try await manager.finish() }
-                try? self.waitForAsync { await manager.reset() }
-                result = .success(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+                guard let stream = self.stream else { throw StreamingTranscriberError.notLoaded }
+                let tail = try stream.finalize()
+                self.appendTranscriptDelta(tail)
+                stream.free()
+                self.stream = nil
+                result = .success(
+                    self.runningTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
             } catch {
                 result = .failure(error)
             }
@@ -100,8 +140,9 @@ final class StreamingTranscriber: @unchecked Sendable {
     func cancelSession() {
         queue.async {
             self.pendingError = nil
-            guard let manager = self.manager else { return }
-            try? self.waitForAsync { await manager.reset() }
+            self.runningTranscript = ""
+            self.stream?.free()
+            self.stream = nil
         }
     }
 
@@ -119,38 +160,98 @@ final class StreamingTranscriber: @unchecked Sendable {
     }
 
     private func ensureLoaded() throws {
-        if loaded {
+        if loaded, context != nil {
             setWarm(true)
             return
         }
 
-        let modelDir = URL(fileURLWithPath: Config.streamingModelDirectoryPath, isDirectory: true)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: modelDir.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
-            throw StreamingTranscriberError.modelDirectoryMissing(modelDir.path)
+        let libraryPath = Config.parakeetLibraryPath
+        guard FileManager.default.fileExists(atPath: libraryPath) else {
+            throw StreamingTranscriberError.libraryMissing(libraryPath)
         }
 
-        let configuration = MLModelConfiguration()
-        configuration.computeUnits = .cpuAndNeuralEngine
-        let manager = StreamingNemotronAsrManager(
-            configuration: configuration,
-            requestedChunkSize: .ms560
-        )
-        try waitForAsync { try await manager.loadModels(from: modelDir) }
-        self.manager = manager
+        let modelPath = Config.streamingModelPath
+        guard FileManager.default.fileExists(atPath: modelPath) else {
+            throw StreamingTranscriberError.modelFileMissing(modelPath)
+        }
+
+        let library = try ParakeetLibrary(path: libraryPath)
+        let context = try ParakeetContext(library: library, modelPath: modelPath)
+        self.library = library
+        self.context = context
         loaded = true
         setWarm(true)
     }
 
     private func shutdownOnQueue() {
-        if let manager {
-            try? waitForAsync { await manager.cleanup() }
-        }
-        manager = nil
+        stream?.free()
+        stream = nil
+        context = nil
+        library = nil
         loaded = false
         pendingError = nil
+        runningTranscript = ""
         setWarm(false)
+    }
+
+    private func pcm16kMono(from buffer: AVAudioPCMBuffer) throws -> [Float] {
+        if isStreamFormat(buffer.format) {
+            return try floatSamples(from: buffer)
+        }
+
+        guard let converter = AVAudioConverter(from: buffer.format, to: streamFormat) else {
+            throw StreamingTranscriberError.resampleFailed("could not create converter")
+        }
+
+        let ratio = streamFormat.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 4096
+        guard let converted = AVAudioPCMBuffer(
+            pcmFormat: streamFormat,
+            frameCapacity: capacity
+        ) else {
+            throw StreamingTranscriberError.resampleFailed("could not allocate output buffer")
+        }
+
+        var suppliedInput = false
+        var conversionError: NSError?
+        let status = converter.convert(to: converted, error: &conversionError) { _, outStatus in
+            if suppliedInput {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            suppliedInput = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        if status == .error {
+            throw StreamingTranscriberError.resampleFailed(
+                conversionError?.localizedDescription ?? "unknown converter error"
+            )
+        }
+
+        return try floatSamples(from: converted)
+    }
+
+    private func isStreamFormat(_ format: AVAudioFormat) -> Bool {
+        format.commonFormat == .pcmFormatFloat32 &&
+            format.channelCount == 1 &&
+            abs(format.sampleRate - streamFormat.sampleRate) < 0.5
+    }
+
+    private func floatSamples(from buffer: AVAudioPCMBuffer) throws -> [Float] {
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return [] }
+        guard let channel = buffer.floatChannelData?[0] else {
+            throw StreamingTranscriberError.invalidPCMBuffer
+        }
+        return Array(UnsafeBufferPointer(start: channel, count: count))
+    }
+
+    private func appendTranscriptDelta(_ delta: String) {
+        guard !delta.isEmpty else { return }
+        runningTranscript += delta
+        emitPartial(runningTranscript)
     }
 
     private func setWarm(_ warm: Bool) {
@@ -162,22 +263,159 @@ final class StreamingTranscriber: @unchecked Sendable {
         guard !text.isEmpty else { return }
         DispatchQueue.main.async { self.onPartial?(text) }
     }
+}
 
-    private func waitForAsync<T>(_ operation: @escaping () async throws -> T) throws -> T {
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<T, Error>?
+private final class ParakeetLibrary {
+    typealias AbiVersion = @convention(c) () -> CInt
+    typealias Load = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?
+    typealias Free = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    typealias StreamBegin = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    typealias StreamFeed = @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafePointer<Float>?,
+        CInt,
+        UnsafeMutablePointer<CInt>?
+    ) -> UnsafeMutablePointer<CChar>?
+    typealias StreamFinalize = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+    typealias StreamFree = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    typealias FreeString = @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
+    typealias LastError = @convention(c) (UnsafeMutableRawPointer?) -> UnsafePointer<CChar>?
 
-        Task {
-            do {
-                result = .success(try await operation())
-            } catch {
-                result = .failure(error)
-            }
-            semaphore.signal()
+    let handle: UnsafeMutableRawPointer
+    let load: Load
+    let free: Free
+    let streamBegin: StreamBegin
+    let streamFeed: StreamFeed
+    let streamFinalize: StreamFinalize
+    let streamFree: StreamFree
+    let freeString: FreeString
+    let lastError: LastError
+
+    init(path: String) throws {
+        guard let opened = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
+            throw StreamingTranscriberError.libraryLoadFailed(path, Self.dlerrorMessage())
         }
 
-        semaphore.wait()
-        guard let result else { throw StreamingTranscriberError.notLoaded }
-        return try result.get()
+        do {
+            let abiVersion: AbiVersion = try Self.symbol(
+                "parakeet_capi_abi_version",
+                from: opened
+            )
+            let abi = abiVersion()
+            guard abi >= 1 else {
+                throw StreamingTranscriberError.libraryLoadFailed(
+                    path,
+                    "unsupported C API ABI \(abi)"
+                )
+            }
+
+            self.handle = opened
+            self.load = try Self.symbol("parakeet_capi_load", from: opened)
+            self.free = try Self.symbol("parakeet_capi_free", from: opened)
+            self.streamBegin = try Self.symbol("parakeet_capi_stream_begin", from: opened)
+            self.streamFeed = try Self.symbol("parakeet_capi_stream_feed", from: opened)
+            self.streamFinalize = try Self.symbol("parakeet_capi_stream_finalize", from: opened)
+            self.streamFree = try Self.symbol("parakeet_capi_stream_free", from: opened)
+            self.freeString = try Self.symbol("parakeet_capi_free_string", from: opened)
+            self.lastError = try Self.symbol("parakeet_capi_last_error", from: opened)
+        } catch {
+            dlclose(opened)
+            throw error
+        }
+    }
+
+    deinit {
+        dlclose(handle)
+    }
+
+    private static func symbol<T>(_ name: String, from handle: UnsafeMutableRawPointer) throws -> T {
+        guard let raw = dlsym(handle, name) else {
+            throw StreamingTranscriberError.symbolMissing(name)
+        }
+        return unsafeBitCast(raw, to: T.self)
+    }
+
+    private static func dlerrorMessage() -> String {
+        guard let message = dlerror() else { return "unknown dlopen error" }
+        return String(cString: message)
+    }
+}
+
+private final class ParakeetContext {
+    let library: ParakeetLibrary
+    let pointer: UnsafeMutableRawPointer
+
+    init(library: ParakeetLibrary, modelPath: String) throws {
+        self.library = library
+        guard let loaded = modelPath.withCString({ library.load($0) }) else {
+            throw StreamingTranscriberError.contextLoadFailed(modelPath)
+        }
+        self.pointer = loaded
+    }
+
+    deinit {
+        library.free(pointer)
+    }
+
+    var lastErrorMessage: String {
+        guard let message = library.lastError(pointer) else { return "unknown error" }
+        let text = String(cString: message)
+        return text.isEmpty ? "unknown error" : text
+    }
+}
+
+private final class ParakeetStreamSession {
+    private let context: ParakeetContext
+    private let pointer: UnsafeMutableRawPointer
+    private var isFreed = false
+
+    init(context: ParakeetContext) throws {
+        self.context = context
+        guard let stream = context.library.streamBegin(context.pointer) else {
+            throw StreamingTranscriberError.streamStartFailed(context.lastErrorMessage)
+        }
+        self.pointer = stream
+    }
+
+    deinit {
+        free()
+    }
+
+    func feed(_ samples: [Float]) throws -> String {
+        guard samples.count <= Int(CInt.max) else {
+            throw StreamingTranscriberError.streamFeedFailed("too many samples")
+        }
+        guard !samples.isEmpty else { return "" }
+
+        return try samples.withUnsafeBufferPointer { buffer in
+            var eou: CInt = 0
+            let text = context.library.streamFeed(
+                pointer,
+                buffer.baseAddress,
+                CInt(buffer.count),
+                &eou
+            )
+            return try takeString(text, failure: .streamFeedFailed(context.lastErrorMessage))
+        }
+    }
+
+    func finalize() throws -> String {
+        let text = context.library.streamFinalize(pointer)
+        return try takeString(text, failure: .streamFinalizeFailed(context.lastErrorMessage))
+    }
+
+    func free() {
+        guard !isFreed else { return }
+        context.library.streamFree(pointer)
+        isFreed = true
+    }
+
+    private func takeString(
+        _ pointer: UnsafeMutablePointer<CChar>?,
+        failure: StreamingTranscriberError
+    ) throws -> String {
+        guard let pointer else { throw failure }
+        defer { context.library.freeString(pointer) }
+        return String(cString: pointer)
     }
 }
