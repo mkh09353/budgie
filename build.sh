@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Build Budgie.app - a fully self-contained macOS menu-bar bundle.
+# Build Budgie.app - a macOS menu-bar bundle with self-contained Live mode.
 #
 # The bundle embeds everything needed to run on any Apple-silicon Mac:
 #   Contents/MacOS/Budgie           the Swift menu-bar app
 #   Contents/Frameworks/Parakeet/   the parakeet.cpp C library + its ggml dylibs
-#   Contents/Resources/*.gguf       the standard speech model
 #   Contents/Resources/*.gguf       the streaming speech model
 #
 # parakeet.cpp's dylibs are built with absolute rpaths pointing at the build
@@ -19,23 +18,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP="Budgie.app"
-# The parakeet.cpp checkout and the models live inside the repo (git-ignored —
-# see README "Building from source"), so a fresh clone is self-contained.
+# The parakeet.cpp checkout and the streaming model live inside the repo (git-ignored —
+# see README "Building from source"), so a fresh clone can package Streaming
+# mode after setup.
 REPO_ROOT="$(pwd)"
 APP_OUTPUT_DIR="${APP_OUTPUT_DIR:-${REPO_ROOT}}"
 PARAKEET_BUILD="${PARAKEET_BUILD:-${REPO_ROOT}/ParakeetCpp/build-shared}"
-# Both modes run through parakeet.cpp's C library: the standard (non-streaming)
-# model is its build of NVIDIA Parakeet TDT 0.6b v3, the streaming model the
-# cache-aware EOU RNN-T.
-MODEL="${MODEL:-${REPO_ROOT}/models/tdt-0.6b-v3-q4_k.gguf}"
 STREAMING_MODEL="${STREAMING_MODEL:-${REPO_ROOT}/models/realtime_eou_120m-v1-q8_0.gguf}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-MacBird Development}"
-
-if [[ ! -f "${MODEL}" ]]; then
-  echo "Missing standard model: ${MODEL}" >&2
-  echo "Run the README's standard model download step first." >&2
-  exit 1
-fi
 
 if [[ ! -f "${PARAKEET_BUILD}/libparakeet.dylib" ]]; then
   echo "Missing parakeet.cpp library: ${PARAKEET_BUILD}/libparakeet.dylib" >&2
@@ -45,7 +35,7 @@ fi
 
 if [[ ! -f "${STREAMING_MODEL}" ]]; then
   echo "Missing streaming model: ${STREAMING_MODEL}" >&2
-  echo "Run the README's Streaming model download step first." >&2
+  echo "Run the README's Live model download step first." >&2
   exit 1
 fi
 
@@ -100,9 +90,6 @@ for d in "${PARAKEET_DYLIBS[@]}"; do
   fi
   PARAKEET_BUNDLED_DYLIB_REFS+=("$target")
 done
-
-echo "Copying model ($(du -h "${MODEL}" | cut -f1))..."
-ditto "${MODEL}" "${RES}/$(basename "${MODEL}")"
 
 echo "Copying streaming model ($(du -h "${STREAMING_MODEL}" | cut -f1))..."
 ditto "${STREAMING_MODEL}" "${RES}/$(basename "${STREAMING_MODEL}")"
@@ -178,5 +165,5 @@ xattr -cr "${DEST_APP}" 2>/dev/null || true
 echo "Verifying final bundle..."
 codesign --verify --deep --strict "${DEST_APP}"
 
-echo "Done -> ${DEST_APP}  ($(du -sh "${DEST_APP}" | cut -f1), self-contained)"
+echo "Done -> ${DEST_APP}  ($(du -sh "${DEST_APP}" | cut -f1), Live-ready)"
 echo "Launch it with:  open ${DEST_APP}"

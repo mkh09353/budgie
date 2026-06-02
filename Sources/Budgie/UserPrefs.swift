@@ -67,8 +67,8 @@ enum TranscriptionMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .standard:  return "Standard"
-        case .streaming: return "Streaming"
+        case .standard:  return "Punctuated"
+        case .streaming: return "Live"
         }
     }
 }
@@ -103,7 +103,7 @@ final class UserPrefs: ObservableObject {
         insertMode = InsertMode(rawValue: d.string(forKey: "insertMode") ?? "") ?? .type
         transcriptionMode = TranscriptionMode(
             rawValue: d.string(forKey: "transcriptionMode") ?? ""
-        ) ?? .standard
+        ) ?? .streaming
         playSounds = d.object(forKey: "playSounds") as? Bool ?? true
         showLabel = d.bool(forKey: "showLabel")
         launchAtLogin = SMAppService.mainApp.status == .enabled

@@ -5,10 +5,15 @@ import SwiftUI
 struct PreferencesView: View {
     @ObservedObject var state: AppState
     @ObservedObject var prefs: UserPrefs
+    var onSelectTranscriptionMode: (TranscriptionMode) -> Void
 
     var body: some View {
         TabView {
-            GeneralTab(prefs: prefs)
+            GeneralTab(
+                state: state,
+                prefs: prefs,
+                onSelectTranscriptionMode: onSelectTranscriptionMode
+            )
                 .tabItem { Label("General", systemImage: "gearshape") }
             HotkeyTab(prefs: prefs)
                 .tabItem { Label("Hotkey", systemImage: "keyboard") }
@@ -17,20 +22,26 @@ struct PreferencesView: View {
             AboutTab(state: state)
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 440, height: 340)
+        .frame(width: 480, height: 380)
     }
 }
 
 // MARK: - General
 
 private struct GeneralTab: View {
+    @ObservedObject var state: AppState
     @ObservedObject var prefs: UserPrefs
+    var onSelectTranscriptionMode: (TranscriptionMode) -> Void
 
-    private var streamingMode: Binding<Bool> {
+    private var selectedMode: Binding<TranscriptionMode> {
         Binding(
-            get: { prefs.transcriptionMode == .streaming },
-            set: { prefs.transcriptionMode = $0 ? .streaming : .standard }
+            get: { state.pendingTranscriptionMode ?? prefs.transcriptionMode },
+            set: { onSelectTranscriptionMode($0) }
         )
+    }
+
+    private var requestedMode: TranscriptionMode {
+        state.pendingTranscriptionMode ?? prefs.transcriptionMode
     }
 
     var body: some View {
@@ -42,12 +53,76 @@ private struct GeneralTab: View {
 
             Divider().padding(.vertical, 4)
 
-            Toggle("Streaming mode", isOn: streamingMode)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Dictation style:", selection: selectedMode) {
+                    ForEach(TranscriptionMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(modeDescription)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                punctuatedModelStatus
+            }
+
+            Divider().padding(.vertical, 4)
+
             Toggle("Play a sound when text is ready", isOn: $prefs.playSounds)
             Toggle("Show a text label in the menu bar", isOn: $prefs.showLabel)
             Toggle("Launch Budgie at login", isOn: $prefs.launchAtLogin)
         }
         .padding(20)
+    }
+
+    private var modeDescription: String {
+        switch requestedMode {
+        case .streaming:
+            return "Streams text while you speak. This is Budgie's default mode."
+        case .standard:
+            if state.pendingTranscriptionMode == .standard {
+                return "Live mode stays active until the Punctuated model is ready."
+            }
+            return "Waits until you release the key, then returns text with punctuation."
+        }
+    }
+
+    @ViewBuilder
+    private var punctuatedModelStatus: some View {
+        switch state.punctuatedModelStatus {
+        case .unavailable:
+            Text("Punctuated mode downloads a larger model the first time; it can take a few minutes.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case .downloading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Downloading the Punctuated model. You can keep using Live mode.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .ready:
+            if requestedMode == .standard {
+                Label("Punctuated model ready", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.green)
+            }
+        case .failed(let message):
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 

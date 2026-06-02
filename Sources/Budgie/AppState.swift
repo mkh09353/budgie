@@ -12,6 +12,23 @@ enum DictationState: Equatable {
     case error(String)
 }
 
+enum PunctuatedModelStatus: Equatable {
+    case unavailable
+    case downloading
+    case ready
+    case failed(String)
+
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    var isDownloading: Bool {
+        if case .downloading = self { return true }
+        return false
+    }
+}
+
 /// One finished dictation, kept for the popover's "Recent" list.
 struct Transcription: Identifiable, Codable {
     var id = UUID()
@@ -27,6 +44,8 @@ final class AppState: ObservableObject {
     @Published var level: Float = 0
     @Published var engineWarm = false
     @Published var recordingStarted: Date?
+    @Published var pendingTranscriptionMode: TranscriptionMode?
+    @Published var punctuatedModelStatus: PunctuatedModelStatus = .unavailable
 
     @Published var recent: [Transcription] = []
     @Published var wordsToday = 0

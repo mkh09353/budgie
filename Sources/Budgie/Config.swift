@@ -2,12 +2,10 @@ import Foundation
 
 /// Paths to the local speech models and the parakeet.cpp C library.
 ///
-/// `build.sh` bundles the parakeet.cpp C library, the standard GGUF model and
-/// the streaming GGUF model inside `Budgie.app`, rewriting the library rpaths to
-/// `@rpath`, so the app is self-contained. These properties resolve to the
-/// bundled copies at runtime; when the bundled files are absent (e.g. running
-/// via `swift run` during development) they fall back to the build-tree copies
-/// in this repo.
+/// `build.sh` bundles the parakeet.cpp C library and the streaming GGUF model
+/// inside `Budgie.app`, rewriting the library rpaths to `@rpath`, so Live mode
+/// is self-contained. Punctuated mode resolves to a cached model in
+/// Application Support, downloading it on first use.
 enum Config {
     /// Repo root, derived from this source file's compile-time location, used
     /// only for the `swift run` dev fallback below. `ParakeetCpp/` and `models/`
@@ -19,10 +17,33 @@ enum Config {
         .deletingLastPathComponent()   // repo root
         .path
 
-    /// The standard (non-streaming) NVIDIA Parakeet TDT 0.6b v3 model, run
-    /// through parakeet.cpp's C library. Keeps the model's punctuation +
-    /// capitalization.
+    private static let runningFromAppBundle = Bundle.main.bundleURL.pathExtension == "app"
+
+    /// The Punctuated-mode NVIDIA Parakeet TDT 0.6b v3 model, run through
+    /// parakeet.cpp's C library. It is not bundled; Punctuated mode
+    /// downloads it into Application Support on first use.
     static let standardModelFileName = "tdt-0.6b-v3-q4_k.gguf"
+
+    static let standardModelDownloadURL = URL(
+        string: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt-0.6b-v3-q4_k.gguf"
+    )!
+
+    static let applicationSupportDirectoryURL: URL = {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return base.appendingPathComponent("Budgie", isDirectory: true)
+    }()
+
+    static let modelCacheDirectoryURL: URL = {
+        applicationSupportDirectoryURL.appendingPathComponent("Models", isDirectory: true)
+    }()
+
+    static let standardModelCacheURL: URL = {
+        modelCacheDirectoryURL.appendingPathComponent(standardModelFileName)
+    }()
 
     static let standardModelPath: String = {
         if let bundled = Bundle.main.url(
@@ -31,7 +52,18 @@ enum Config {
         ) {
             return bundled.path
         }
-        return "\(devRoot)/models/\(standardModelFileName)"
+        if FileManager.default.fileExists(atPath: standardModelCacheURL.path) {
+            return standardModelCacheURL.path
+        }
+
+        if !runningFromAppBundle {
+            let developmentModelPath = "\(devRoot)/models/\(standardModelFileName)"
+            if FileManager.default.fileExists(atPath: developmentModelPath) {
+                return developmentModelPath
+            }
+        }
+
+        return standardModelCacheURL.path
     }()
 
     static let streamingModelFileName = "realtime_eou_120m-v1-q8_0.gguf"

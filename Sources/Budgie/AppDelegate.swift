@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingMode: TranscriptionMode?
     private var streamingSessionActive = false
     private var streamingLiveText = ""
+    private var punctuatedPreparationID: UUID?
     private let workQueue = DispatchQueue(label: "com.maxheadley.budgie.work")
     private var cancellables = Set<AnyCancellable>()
 
@@ -45,9 +46,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.requestMicAccess()
         Permissions.ensureAccessibility()
         restartKeyMonitor()
+        refreshPunctuatedModelStatus()
 
         // Start the selected engine now so the first dictation finds it warm.
-        activateSelectedEngine(prefs.transcriptionMode)
+        if prefs.transcriptionMode == .standard && !StandardTranscriber.standardModelAvailable {
+            prefs.transcriptionMode = .streaming
+            activateSelectedEngine(.streaming)
+            preparePunctuatedMode()
+        } else {
+            activateSelectedEngine(prefs.transcriptionMode)
+        }
 
         // Redraw the menu bar icon whenever the state or live level changes.
         state.$dictation
@@ -177,9 +185,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openPreferences() {
         if prefsWindow == nil {
-            let view = PreferencesView(state: state, prefs: prefs)
+            let view = PreferencesView(
+                state: state,
+                prefs: prefs,
+                onSelectTranscriptionMode: { [weak self] mode in
+                    self?.requestTranscriptionMode(mode)
+                }
+            )
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 440, height: 340),
+                contentRect: NSRect(x: 0, y: 0, width: 480, height: 380),
                 styleMask: [.titled, .closable],
                 backing: .buffered, defer: false)
             window.title = "Budgie Settings"
@@ -225,6 +239,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func requestTranscriptionMode(_ mode: TranscriptionMode) {
+        switch mode {
+        case .streaming:
+            punctuatedPreparationID = nil
+            state.pendingTranscriptionMode = nil
+            refreshPunctuatedModelStatus()
+            if prefs.transcriptionMode != .streaming {
+                prefs.transcriptionMode = .streaming
+            }
+        case .standard:
+            guard prefs.transcriptionMode != .standard else { return }
+            if StandardTranscriber.standardModelAvailable {
+                state.punctuatedModelStatus = .ready
+                state.pendingTranscriptionMode = nil
+                prefs.transcriptionMode = .standard
+                return
+            }
+            guard !state.punctuatedModelStatus.isDownloading else {
+                state.pendingTranscriptionMode = .standard
+                return
+            }
+            preparePunctuatedMode()
+        }
+    }
+
+    private func preparePunctuatedMode() {
+        let requestID = UUID()
+        punctuatedPreparationID = requestID
+        state.pendingTranscriptionMode = .standard
+        state.punctuatedModelStatus = .downloading
+
+        engine.prepareForActivation { [weak self] result in
+            guard let self else { return }
+
+            guard self.punctuatedPreparationID == requestID else {
+                self.refreshPunctuatedModelStatus()
+                self.engine.shutdown()
+                return
+            }
+
+            self.punctuatedPreparationID = nil
+            switch result {
+            case .success:
+                self.state.punctuatedModelStatus = .ready
+                self.switchToPreparedPunctuatedModeIfPossible()
+            case .failure(let error):
+                self.state.punctuatedModelStatus = .failed(self.punctuatedPreparationMessage(error))
+                self.state.pendingTranscriptionMode = nil
+                if self.prefs.transcriptionMode != .streaming {
+                    self.prefs.transcriptionMode = .streaming
+                } else {
+                    self.activateSelectedEngine(.streaming)
+                }
+            }
+        }
+    }
+
+    private func refreshPunctuatedModelStatus() {
+        if StandardTranscriber.standardModelAvailable {
+            state.punctuatedModelStatus = .ready
+        } else if !state.punctuatedModelStatus.isDownloading {
+            state.punctuatedModelStatus = .unavailable
+        }
+    }
+
+    private func switchToPreparedPunctuatedModeIfPossible() {
+        guard state.pendingTranscriptionMode == .standard else { return }
+        guard state.punctuatedModelStatus.isReady else { return }
+        guard prefs.transcriptionMode != .standard else {
+            state.pendingTranscriptionMode = nil
+            return
+        }
+        guard canSwitchTranscriptionModeNow else { return }
+
+        state.pendingTranscriptionMode = nil
+        prefs.transcriptionMode = .standard
+    }
+
+    private var canSwitchTranscriptionModeNow: Bool {
+        guard !busy, recordingMode == nil, !streamingSessionActive else { return false }
+        if case .idle = state.dictation { return true }
+        return false
+    }
+
     // MARK: - Dictation flow
 
     private func startRecording() {
@@ -264,10 +362,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             streamingSessionActive = false
             streamingLiveText = ""
             state.dictation = .idle
+            switchToPreparedPunctuatedModeIfPossible()
             return
         }
         if mode == .standard, wav == nil {
             state.dictation = .idle
+            switchToPreparedPunctuatedModeIfPossible()
             return
         }
 
@@ -278,19 +378,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         workQueue.async { [weak self] in
             guard let self else { return }
-            let text: String
-            let errorMessage: String?
+            var text = ""
+            var errorMessage: String?
             switch mode {
             case .standard:
-                text = wav.map { self.engine.transcribe($0) } ?? ""
-                errorMessage = nil
+                do {
+                    if let wav {
+                        text = try self.engine.transcribe(wav)
+                    }
+                } catch {
+                    NSLog("Budgie: standard transcription failed: \(error)")
+                    errorMessage = self.standardErrorMessage(error)
+                }
             case .streaming:
                 do {
                     text = try self.streamingEngine.finish()
-                    errorMessage = nil
                 } catch {
                     NSLog("Budgie: streaming transcription failed: \(error)")
-                    text = ""
                     errorMessage = self.streamingErrorMessage(error)
                 }
             }
@@ -312,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !finalText.isEmpty else {
                     self.streamingSessionActive = false
                     self.streamingLiveText = ""
+                    self.switchToPreparedPunctuatedModeIfPossible()
                     return
                 }
                 if mode == .streaming {
@@ -324,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.state.didFinish(finalText, latency: latency,
                                      recordingDuration: recordingDuration)
                 if self.prefs.playSounds { NSSound(named: "Pop")?.play() }
+                self.switchToPreparedPunctuatedModeIfPossible()
             }
         }
     }
@@ -334,16 +440,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .libraryMissing, .libraryLoadFailed, .symbolMissing:
                 return "Build parakeet.cpp in ParakeetCpp/build-shared."
             case .modelFileMissing:
-                return "Install the Streaming model in models/realtime_eou_120m-v1-q8_0.gguf."
+                return "Install the Live model in models/realtime_eou_120m-v1-q8_0.gguf."
             case .notLoaded:
                 break
             case .contextLoadFailed, .streamStartFailed, .streamFeedFailed,
                  .streamFinalizeFailed, .transcribeFailed, .resampleFailed,
-                 .invalidPCMBuffer:
+                 .modelDownloadFailed, .invalidPCMBuffer:
                 break
             }
         }
         return "Streaming transcription failed."
+    }
+
+    private func standardErrorMessage(_ error: Error) -> String {
+        if let error = error as? StreamingTranscriberError {
+            switch error {
+            case .libraryMissing, .libraryLoadFailed, .symbolMissing:
+                return "Build parakeet.cpp in ParakeetCpp/build-shared."
+            case .modelDownloadFailed:
+                return "Could not download the Punctuated model."
+            case .modelFileMissing, .contextLoadFailed, .transcribeFailed:
+                return "Punctuated transcription failed."
+            case .notLoaded:
+                break
+            case .streamStartFailed, .streamFeedFailed, .streamFinalizeFailed,
+                 .resampleFailed, .invalidPCMBuffer:
+                break
+            }
+        }
+        return "Punctuated transcription failed."
+    }
+
+    private func punctuatedPreparationMessage(_ error: Error) -> String {
+        if let error = error as? StreamingTranscriberError {
+            switch error {
+            case .modelDownloadFailed:
+                return "Download failed. Check your connection and try again."
+            case .libraryMissing, .libraryLoadFailed, .symbolMissing:
+                return "The speech library is missing from this build."
+            default:
+                break
+            }
+        }
+        return "Could not prepare Punctuated mode."
     }
 
     private func applyStreamingTranscript(_ text: String) {

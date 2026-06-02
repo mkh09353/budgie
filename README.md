@@ -5,18 +5,18 @@ A tiny macOS menu-bar app for push-to-talk dictation.
 **Hold the push-to-talk key** (Right ⌘ by default) to record, **release** to
 transcribe. The text is typed into whatever app has focus — or copied to the
 clipboard, your choice in Settings. Runs fully offline on parakeet.cpp's C
-library: standard mode transcribes each finished recording with the NVIDIA
-Parakeet TDT 0.6b model (punctuation and capitalization included), and an
-optional Streaming mode types words live as you speak via the cache-aware
-Parakeet EOU model -- no Python, no network at runtime.
+library by default: Live mode types words as you speak via the cache-aware
+Parakeet EOU model bundled in the app. Optional Punctuated mode waits until you
+release the key, then transcribes the finished recording with the larger NVIDIA
+Parakeet TDT 0.6b model, downloading it on first use.
 
 ## Building from source
 
-This repo holds **only the Budgie app**. The build embeds three things too large
-for git -- the parakeet.cpp C library, the standard Parakeet TDT GGUF model and
-the Streaming EOU GGUF model -- so a fresh clone needs them set up once. They
-live *inside* the repo folder and are git-ignored, so once set up everything is
-self-contained.
+This repo holds **only the Budgie app**. The build embeds two things too large
+for git -- the parakeet.cpp C library and the Live-mode EOU GGUF model -- so a
+fresh clone needs them set up once. The larger Punctuated-mode model is not
+bundled; Budgie downloads and caches it in Application Support if the user turns
+Punctuated mode on.
 
 ### 1. Clone
 
@@ -31,7 +31,7 @@ The setup steps below are run from inside this `budgie/` folder, producing:
 budgie/
 ├── Sources/, build.sh, ...   ← the repo (tracked)
 ├── ParakeetCpp/              ← step 2  (git-ignored)
-└── models/                   ← steps 3-4  (git-ignored)
+└── models/                   ← step 3  (git-ignored)
 ```
 
 ### 2. Build the parakeet.cpp C library
@@ -54,45 +54,30 @@ parakeet.cpp dylibs into `Contents/Frameworks/Parakeet/`.
 Metal is intentionally off for now: the current parakeet.cpp/ggml Metal backend
 transcribes correctly, but can assert during process teardown on this machine.
 
-### 3. Download the standard model
+### 3. Download the Live model
 
 ```sh
 mkdir -p models
-curl -L -o models/tdt-0.6b-v3-q4_k.gguf \
-  https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt-0.6b-v3-q4_k.gguf
-```
-
-That's parakeet.cpp's q4_k build of [NVIDIA Parakeet TDT 0.6b
-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), used for standard
-(non-streaming) dictation — it keeps the model's punctuation and capitalization.
-Note this is parakeet.cpp's own GGUF, not a CrispASR/whisper.cpp one, which
-won't load. To use a different model or quant, change the filename here, in
-`build.sh`, and the resource name in `Config.swift`.
-
-### 4. Download the Streaming model
-
-```sh
 curl -L -o models/realtime_eou_120m-v1-q8_0.gguf \
   https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/realtime_eou_120m-v1-q8_0.gguf
 ```
 
 This produces `models/realtime_eou_120m-v1-q8_0.gguf`, the q8_0 cache-aware
-streaming RNN-T model used when **Settings... -> General -> Streaming mode** is
-enabled. The C streaming API expects 16 kHz mono float PCM; Budgie resamples the
+streaming RNN-T model used by default in **Settings... -> General -> Live
+mode**. The C streaming API expects 16 kHz mono float PCM; Budgie resamples the
 microphone tap before feeding chunks to parakeet.cpp.
 
-### 5. Build the app
+### 4. Build the app
 
 ```sh
 APP_OUTPUT_DIR=/Applications ./build.sh
 open /Applications/Budgie.app
 ```
 
-Produces a **self-contained** `Budgie.app` -- the parakeet.cpp C library, the
-standard speech model and the Streaming EOU model are all bundled inside, with
-library paths rewritten to `@rpath`, so the app runs on any Apple-silicon Mac
-with nothing else installed. Requires macOS 14+ and the Swift toolchain (Xcode
-CLT) to build.
+Produces a `Budgie.app` with the parakeet.cpp C library and the Live EOU model
+bundled inside, with library paths rewritten to `@rpath`, so Live mode runs on
+any Apple-silicon Mac with nothing else installed. Requires macOS 14+ and the
+Swift toolchain (Xcode CLT) to build.
 
 `build.sh` signs the bundle with the `MacBird Development` keychain identity by
 default. On a machine without that identity, sign ad-hoc instead:
@@ -147,18 +132,21 @@ Hotkey, Permissions and About.
 
 ## Configuration
 
-`Sources/Budgie/Config.swift` resolves the library and models from inside the
-app bundle at runtime (`Contents/Frameworks/Parakeet/libparakeet.dylib`, the
-bundled `tdt-0.6b-v3-q4_k.gguf` for standard mode and
-`realtime_eou_120m-v1-q8_0.gguf` for Streaming mode). When run outside a
-bundle -- e.g. via `swift run` during development -- it falls back to the
-build-tree copies in this repo. To change models or quant, edit the model list
-in `build.sh` (and the resource names in `Config.swift`) and rebuild.
+`Sources/Budgie/Config.swift` resolves the parakeet.cpp library from
+`Contents/Frameworks/Parakeet/libparakeet.dylib` and the bundled Live model from
+`Contents/Resources/realtime_eou_120m-v1-q8_0.gguf`. Punctuated mode uses
+`tdt-0.6b-v3-q4_k.gguf`, downloading it from Hugging Face into
+`~/Library/Application Support/Budgie/Models/` on first use. When run outside a
+bundle -- e.g. via `swift run` during development -- it can also use matching
+files in the repo's `models/` directory.
 
 ## Notes
 
-- The selected engine loads its model once at launch and keeps it resident, so
-  each dictation is just a transcribe call through the parakeet.cpp C library.
-  The model is unloaded after 5 minutes idle to reclaim its memory; re-warming
+- The selected engine loads its model once and keeps it resident, so each
+  dictation is just a transcribe call through the parakeet.cpp C library. The
+  model is unloaded after 5 minutes idle to reclaim its memory; re-warming
   `mmap`s the GGUF, so it costs only a fraction of a second.
+- Punctuated mode's first use needs a network connection to download the larger
+  model. Live mode remains active while the download runs, and after that
+  Punctuated mode runs offline from the Application Support cache.
 - Recordings shorter than 0.3 s are ignored (accidental key taps).

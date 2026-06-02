@@ -12,6 +12,7 @@ enum StreamingTranscriberError: LocalizedError {
     case streamFeedFailed(String)
     case streamFinalizeFailed(String)
     case transcribeFailed(String)
+    case modelDownloadFailed(String)
     case resampleFailed(String)
     case invalidPCMBuffer
     case notLoaded
@@ -25,7 +26,7 @@ enum StreamingTranscriberError: LocalizedError {
         case .symbolMissing(let name):
             return "parakeet.cpp library is missing \(name)"
         case .modelFileMissing(let path):
-            return "Streaming model missing at \(path)"
+            return "Model missing at \(path)"
         case .contextLoadFailed(let message):
             return "Could not load streaming model: \(message)"
         case .streamStartFailed(let message):
@@ -36,6 +37,8 @@ enum StreamingTranscriberError: LocalizedError {
             return "Streaming finalize failed: \(message)"
         case .transcribeFailed(let message):
             return "Transcription failed: \(message)"
+        case .modelDownloadFailed(let message):
+            return "Model download failed: \(message)"
         case .resampleFailed(let message):
             return "Audio resample failed: \(message)"
         case .invalidPCMBuffer:

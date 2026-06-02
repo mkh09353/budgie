@@ -1,7 +1,7 @@
 import AVFoundation
 
 /// Captures microphone audio while the key is held, then writes it out as a
-/// 16 kHz mono 16-bit WAV for the standard engine to transcribe.
+/// 16 kHz mono 16-bit WAV for the Punctuated engine to transcribe.
 final class AudioRecorder {
     /// Called on the main thread with a live input level (0...1) while recording.
     var onLevel: ((Float) -> Void)?
