@@ -25,7 +25,21 @@ REPO_ROOT="$(pwd)"
 APP_OUTPUT_DIR="${APP_OUTPUT_DIR:-${REPO_ROOT}}"
 PARAKEET_BUILD="${PARAKEET_BUILD:-${REPO_ROOT}/ParakeetCpp/build-shared}"
 STREAMING_MODEL="${STREAMING_MODEL:-${REPO_ROOT}/models/realtime_eou_120m-v1-q8_0.gguf}"
+ICON="${ICON:-${REPO_ROOT}/Budgie.icns}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-MacBird Development}"
+ENTITLEMENTS="${ENTITLEMENTS:-${REPO_ROOT}/Budgie.entitlements}"
+
+# Notarization requires the hardened runtime, a secure timestamp, and the
+# audio-input entitlement. Auto-enable these for a "Developer ID" identity;
+# leave local (MacBird Development) and ad-hoc (-) builds untouched so their
+# privacy-permission behaviour doesn't change. Override with HARDENED=1 / 0.
+HARDENED="${HARDENED:-auto}"
+if [[ "${HARDENED}" == "auto" ]]; then
+  case "${SIGN_IDENTITY}" in
+    "Developer ID"*) HARDENED=1 ;;
+    *) HARDENED=0 ;;
+  esac
+fi
 
 if [[ ! -f "${PARAKEET_BUILD}/libparakeet.dylib" ]]; then
   echo "Missing parakeet.cpp library: ${PARAKEET_BUILD}/libparakeet.dylib" >&2
@@ -60,6 +74,13 @@ RES="${BUNDLE}/Contents/Resources"
 mkdir -p "${MACOS}" "${PKFW}" "${RES}"
 ditto .build/release/Budgie "${MACOS}/Budgie"
 ditto Info.plist             "${BUNDLE}/Contents/Info.plist"
+# App icon (CFBundleIconFile -> Budgie.icns). Optional so a fresh clone without
+# the generated icns still builds; regenerate it with tools/make-icon.swift.
+if [[ -f "${ICON}" ]]; then
+  ditto "${ICON}" "${RES}/Budgie.icns"
+else
+  echo "Note: ${ICON} not found — app will use the generic icon." >&2
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Copy the parakeet.cpp library, its dylibs and the models into the bundle
@@ -140,12 +161,27 @@ done
 # ---------------------------------------------------------------------------
 # A stable keychain identity keeps macOS privacy permissions (Input Monitoring
 # / Accessibility) across rebuilds; ad-hoc signing re-pins them every build.
-echo "Signing with '${SIGN_IDENTITY}'..."
+# The main bundle gets the entitlements; nested dylibs are signed bare. When
+# hardened, both also get --options runtime and a --timestamp (notarization
+# rejects un-timestamped or non-hardened code).
+BUNDLE_SIGN_OPTS=(--force --sign "${SIGN_IDENTITY}")
+DYLIB_SIGN_OPTS=(--force --sign "${SIGN_IDENTITY}")
+if [[ "${HARDENED}" == "1" ]]; then
+  if [[ ! -f "${ENTITLEMENTS}" ]]; then
+    echo "Missing entitlements file: ${ENTITLEMENTS}" >&2
+    exit 1
+  fi
+  BUNDLE_SIGN_OPTS+=(--options runtime --timestamp --entitlements "${ENTITLEMENTS}")
+  DYLIB_SIGN_OPTS+=(--options runtime --timestamp)
+  echo "Signing with '${SIGN_IDENTITY}' (hardened runtime, timestamped)..."
+else
+  echo "Signing with '${SIGN_IDENTITY}'..."
+fi
 xattr -cr "${BUNDLE}"
 for f in "${PARAKEET_BUNDLED_DYLIBS[@]}"; do
-  codesign --force --sign "${SIGN_IDENTITY}" "$f"
+  codesign "${DYLIB_SIGN_OPTS[@]}" "$f"
 done
-codesign --force --sign "${SIGN_IDENTITY}" "${BUNDLE}"
+codesign "${BUNDLE_SIGN_OPTS[@]}" "${BUNDLE}"
 
 echo "Verifying..."
 codesign --verify --deep --strict "${BUNDLE}"

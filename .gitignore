@@ -1,6 +1,11 @@
-# Build output — produced by build.sh / swift build, not source.
+# Build output — produced by build.sh / release.sh / swift build, not source.
 /Budgie.app/
 /.build/
+/Budgie-*.dmg
+
+# Generated icon artifacts — regenerate from tools/make-icon*.swift.
+/Budgie.iconset/
+/icon-previews/
 
 # Build prerequisites — set up per the README, not part of this repo.
 # CrispASR and ParakeetCpp are their own git repos; models are large downloads.

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Budgie ships with the hardened runtime (required for notarization) but is
+      NOT sandboxed: it types transcripts into other apps via Accessibility and
+      watches the push-to-talk key via Input Monitoring, both of which the App
+      Sandbox forbids. Developer ID apps don't need the sandbox, so we omit it.
+
+      Under the hardened runtime, microphone access is gated by this entitlement
+      even after the user grants the TCC prompt — without it the OS denies the
+      audio tap. Accessibility and Input Monitoring are TCC permissions, not
+      entitlements, and need no declaration here.
+
+      All bundled parakeet.cpp dylibs are re-signed with the same Developer ID,
+      so the default library-validation policy passes and we do NOT weaken it
+      with com.apple.security.cs.disable-library-validation.
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

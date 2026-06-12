@@ -89,17 +89,59 @@ SIGN_IDENTITY=- ./build.sh
 Ad-hoc signing works fine for a personal build; it just re-prompts the macOS
 privacy permissions on each rebuild. See *Sharing it* below for distribution.
 
-## Sharing it
+## Distributing it (notarized DMG)
 
-The app is signed with a local development identity, so on another Mac macOS
-shows a "can't verify the developer" warning. To open it the first time:
+For a download-and-double-click experience with **no Gatekeeper warning**, build
+with a **Developer ID Application** certificate, notarize, and ship a stapled
+DMG. `build.sh` auto-enables the hardened runtime + secure timestamp for a
+Developer ID identity (`Budgie.entitlements` declares the microphone use the
+hardened runtime would otherwise block); `release.sh` does the notarize → staple
+→ DMG round-trip.
 
-- **Right-click the app -> Open**, then confirm; or
-- run `xattr -dr com.apple.quarantine Budgie.app` before launching.
+### One-time setup
 
-For double-click-clean distribution with no warning you'd need a paid Apple
-Developer account ($99/yr) to sign with a "Developer ID" certificate and
-notarize the bundle.
+1. **Create the Developer ID Application certificate.** This is a distinct cert
+   type from the "Apple Development" cert used for local builds — it is *not*
+   created automatically by enrolling. Without Xcode installed, use the portal:
+
+   - In **Keychain Access -> Certificate Assistant -> Request a Certificate From
+     a Certificate Authority**, enter your email, choose **Saved to disk**, and
+     save the `.certSigningRequest`.
+   - At <https://developer.apple.com/account/resources/certificates> click **+**,
+     pick **Developer ID Application**, upload the CSR, download the `.cer`, and
+     double-click it to install. Confirm it landed:
+
+     ```sh
+     security find-identity -v -p codesigning   # shows "Developer ID Application: … (TEAMID)"
+     ```
+
+2. **Store notarization credentials** (an app-specific password from
+   <https://appleid.apple.com> -> Sign-In and Security -> App-Specific Passwords):
+
+   ```sh
+   xcrun notarytool store-credentials budgie-notary \
+     --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PW
+   ```
+
+### Each release
+
+```sh
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+./release.sh
+```
+
+This produces `Budgie-<version>.dmg`, notarized and stapled. Upload it to a
+GitHub Release; users drag **Budgie** to **Applications** and launch it with no
+warning, even offline. Bump `CFBundleShortVersionString` / `CFBundleVersion` in
+`Info.plist` per release (the version names the DMG).
+
+### Local / ad-hoc builds (no Developer ID)
+
+Building with the default `MacBird Development` identity, or ad-hoc
+(`SIGN_IDENTITY=- ./build.sh`), still works for personal use but is **not**
+notarized, so other Macs show "can't verify the developer." To open such a build
+the first time: right-click the app -> **Open** and confirm, or run
+`xattr -dr com.apple.quarantine Budgie.app` before launching.
 
 ## First launch — grant three permissions
 
