@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var prefsWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
 
     private let state = AppState()
     private let prefs = UserPrefs.shared
@@ -43,9 +44,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         recorder.onLevel = { [weak self] level in self?.state.level = level }
 
-        recorder.requestMicAccess()
-        Permissions.ensureAccessibility()
-        restartKeyMonitor()
+        // Permissions are requested by the setup window — one at a time, in
+        // order — instead of stacking three system dialogs here at launch.
+        state.refreshPermissions()
+        if state.inputMonitoringGranted {
+            restartKeyMonitor()
+        } else {
+            // Don't try to create the tap yet: a failed attempt fires the
+            // system's Input Monitoring prompt out of the setup order.
+            state.dictation = .error("Finish setup to start dictating.")
+        }
         refreshPunctuatedModelStatus()
 
         // Start the selected engine now so the first dictation finds it warm.
@@ -82,6 +90,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }
             .store(in: &cancellables)
+
+        // Create the event tap the moment Input Monitoring is granted — the
+        // setup window polls permissions while it's open, so this usually
+        // fires seconds after the user flips the toggle, no relaunch needed.
+        state.$inputMonitoringGranted
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] granted in
+                guard let self, granted, self.keyMonitor == nil else { return }
+                self.restartKeyMonitor()
+            }
+            .store(in: &cancellables)
+
+        // First run (or any permission lost since): walk the user through it.
+        if !prefs.onboardingCompleted || !state.allPermissionsGranted {
+            openOnboarding()
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -190,7 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 prefs: prefs,
                 onSelectTranscriptionMode: { [weak self] mode in
                     self?.requestTranscriptionMode(mode)
-                }
+                },
+                onRunSetup: { [weak self] in self?.openOnboarding() }
             )
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 480, height: 380),
@@ -206,11 +232,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefsWindow?.makeKeyAndOrderFront(nil)
     }
 
+    // MARK: - Setup window
+
+    private func openOnboarding() {
+        if onboardingWindow == nil {
+            let view = OnboardingView(
+                state: state,
+                prefs: prefs,
+                onFinished: { [weak self] in
+                    self?.prefs.onboardingCompleted = true
+                    self?.onboardingWindow?.close()
+                },
+                onLater: { [weak self] in
+                    self?.onboardingWindow?.close()
+                }
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 478),
+                styleMask: [.titled, .closable],
+                backing: .buffered, defer: false)
+            window.title = "Set Up Budgie"
+            window.contentView = NSHostingView(rootView: view)
+            window.isReleasedWhenClosed = false
+            // Float above System Settings so the user watches the checkmark
+            // flip as they toggle each permission.
+            window.level = .floating
+            window.center()
+            onboardingWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        onboardingWindow?.makeKeyAndOrderFront(nil)
+    }
+
     // MARK: - Hotkey
 
     private func restartKeyMonitor() {
         keyMonitor?.stop()
         keyMonitor = nil
+        state.keyMonitorRunning = false
 
         let hotKey = prefs.hotKey
         let monitor = KeyMonitor(
@@ -221,6 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         if monitor.start() {
             keyMonitor = monitor
+            state.keyMonitorRunning = true
             if case .error = state.dictation { state.dictation = .idle }
         } else {
             state.dictation = .error("Grant Input Monitoring, then relaunch Budgie.")

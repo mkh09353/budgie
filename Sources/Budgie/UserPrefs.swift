@@ -97,6 +97,12 @@ final class UserPrefs: ObservableObject {
     @Published var launchAtLogin: Bool {
         didSet { applyLaunchAtLogin() }
     }
+    /// Set when the user clicks through the setup window's final screen. The
+    /// window reopens on launch until then (or whenever a permission is lost),
+    /// which is what lets it resume after Input Monitoring's forced relaunch.
+    @Published var onboardingCompleted: Bool {
+        didSet { d.set(onboardingCompleted, forKey: "onboardingCompleted") }
+    }
 
     private init() {
         hotKey = HotKey(rawValue: d.string(forKey: "hotKey") ?? "") ?? .rightCommand
@@ -107,6 +113,7 @@ final class UserPrefs: ObservableObject {
         playSounds = d.object(forKey: "playSounds") as? Bool ?? true
         showLabel = d.bool(forKey: "showLabel")
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        onboardingCompleted = d.bool(forKey: "onboardingCompleted")
     }
 
     private func applyLaunchAtLogin() {

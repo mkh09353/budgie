@@ -1,7 +1,4 @@
 import AppKit
-import AVFoundation
-import ApplicationServices
-import IOKit.hid
 import Combine
 
 /// What the app is doing right now — drives both the menu bar icon and the popover.
@@ -86,10 +83,17 @@ final class AppState: ObservableObject {
         return "\(minutes / 60)h \(minutes % 60)m"
     }
 
-    // Live permission status, refreshed whenever the app becomes active.
+    // Live permission status, refreshed whenever the app becomes active and
+    // polled by the setup window while it is open.
     @Published var micGranted = false
+    /// Denied is distinct from "not asked yet": once denied, only the System
+    /// Settings toggle helps, so the setup window changes its button.
+    @Published var micDenied = false
     @Published var accessibilityGranted = false
     @Published var inputMonitoringGranted = false
+    /// True while the push-to-talk event tap is actually installed. Input
+    /// Monitoring can be granted yet still need a relaunch before a tap works.
+    @Published var keyMonitorRunning = false
 
     var allPermissionsGranted: Bool {
         micGranted && accessibilityGranted && inputMonitoringGranted
@@ -122,10 +126,11 @@ final class AppState: ObservableObject {
     // MARK: - Permissions
 
     func refreshPermissions() {
-        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        accessibilityGranted = AXIsProcessTrusted()
-        inputMonitoringGranted =
-            IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+        let mic = Permissions.micStatus
+        micGranted = mic == .granted
+        micDenied = mic == .denied
+        accessibilityGranted = Permissions.accessibilityGranted
+        inputMonitoringGranted = Permissions.inputMonitoringGranted
     }
 
     // MARK: - Persistence

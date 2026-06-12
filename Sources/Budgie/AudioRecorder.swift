@@ -14,12 +14,6 @@ final class AudioRecorder {
     private var inputFormat: AVAudioFormat?
     private var recording = false
 
-    func requestMicAccess() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            if !granted { NSLog("Budgie: microphone access denied") }
-        }
-    }
-
     func start() {
         guard !recording else { return }
         lock.lock(); buffers.removeAll(); lock.unlock()

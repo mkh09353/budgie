@@ -6,6 +6,7 @@ struct PreferencesView: View {
     @ObservedObject var state: AppState
     @ObservedObject var prefs: UserPrefs
     var onSelectTranscriptionMode: (TranscriptionMode) -> Void
+    var onRunSetup: () -> Void
 
     var body: some View {
         TabView {
@@ -17,7 +18,7 @@ struct PreferencesView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             HotkeyTab(prefs: prefs)
                 .tabItem { Label("Hotkey", systemImage: "keyboard") }
-            PermissionsTab(state: state)
+            PermissionsTab(state: state, onRunSetup: onRunSetup)
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
             AboutTab(state: state)
                 .tabItem { Label("About", systemImage: "info.circle") }
@@ -173,6 +174,7 @@ private struct HotkeyTab: View {
 
 private struct PermissionsTab: View {
     @ObservedObject var state: AppState
+    var onRunSetup: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -197,7 +199,11 @@ private struct PermissionsTab: View {
                 settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
 
             Spacer()
-            Button("Re-check") { state.refreshPermissions() }
+            HStack {
+                Button("Open Setup Assistant…") { onRunSetup() }
+                Spacer()
+                Button("Re-check") { state.refreshPermissions() }
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -245,9 +251,9 @@ private struct AboutTab: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Image(nsImage: MenuBarIcon.budgie(size: NSSize(width: 44, height: 44)))
-                .renderingMode(.template)
-                .foregroundStyle(.tint)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 56, height: 56)
             Text("Budgie").font(.system(size: 18, weight: .semibold))
             Text(version).font(.system(size: 11)).foregroundStyle(.secondary)
             Text("Push-to-talk dictation that runs fully offline\non local Parakeet speech engines.")
