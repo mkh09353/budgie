@@ -2,6 +2,7 @@
 /Budgie.app/
 /.build/
 /Budgie-*.dmg
+/appcast.xml
 
 # Generated icon artifacts — regenerate from tools/make-icon*.swift.
 /Budgie.iconset/

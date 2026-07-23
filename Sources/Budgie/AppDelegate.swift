@@ -1,12 +1,18 @@
 import AppKit
 import SwiftUI
 import Combine
+import Sparkle
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var prefsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
 
     private let state = AppState()
     private let prefs = UserPrefs.shared
@@ -216,7 +222,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onSelectTranscriptionMode: { [weak self] mode in
                     self?.requestTranscriptionMode(mode)
                 },
-                onRunSetup: { [weak self] in self?.openOnboarding() }
+                onRunSetup: { [weak self] in self?.openOnboarding() },
+                onCheckForUpdates: { [weak self] in
+                    self?.updaterController.checkForUpdates(nil)
+                }
             )
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 480, height: 380),

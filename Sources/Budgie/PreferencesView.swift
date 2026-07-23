@@ -7,6 +7,7 @@ struct PreferencesView: View {
     @ObservedObject var prefs: UserPrefs
     var onSelectTranscriptionMode: (TranscriptionMode) -> Void
     var onRunSetup: () -> Void
+    var onCheckForUpdates: () -> Void
 
     var body: some View {
         TabView {
@@ -20,7 +21,7 @@ struct PreferencesView: View {
                 .tabItem { Label("Hotkey", systemImage: "keyboard") }
             PermissionsTab(state: state, onRunSetup: onRunSetup)
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
-            AboutTab(state: state)
+            AboutTab(state: state, onCheckForUpdates: onCheckForUpdates)
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 480, height: 380)
@@ -243,6 +244,7 @@ private struct PermissionRow: View {
 
 private struct AboutTab: View {
     @ObservedObject var state: AppState
+    var onCheckForUpdates: () -> Void
 
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -260,6 +262,9 @@ private struct AboutTab: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .padding(.top, 4)
+
+            Button("Check for Updates…", action: onCheckForUpdates)
                 .padding(.top, 4)
 
             HStack(spacing: 24) {

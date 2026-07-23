@@ -51,6 +51,8 @@ cd ..
 This produces `ParakeetCpp/build-shared/libparakeet.dylib`, which both modes
 load through the flat C API in `include/parakeet_capi.h`. `build.sh` copies all
 parakeet.cpp dylibs into `Contents/Frameworks/Parakeet/`.
+Sparkle is resolved through Swift Package Manager and embedded as
+`Contents/Frameworks/Sparkle.framework`.
 Metal is intentionally off for now: the current parakeet.cpp/ggml Metal backend
 transcribes correctly, but can assert during process teardown on this machine.
 
@@ -96,7 +98,7 @@ with a **Developer ID Application** certificate, notarize, and ship a stapled
 DMG. `build.sh` auto-enables the hardened runtime + secure timestamp for a
 Developer ID identity (`Budgie.entitlements` declares the microphone use the
 hardened runtime would otherwise block); `release.sh` does the notarize → staple
-→ DMG round-trip.
+→ DMG round-trip, then signs the DMG for Sparkle and generates `appcast.xml`.
 
 ### One-time setup
 
@@ -123,17 +125,32 @@ hardened runtime would otherwise block); `release.sh` does the notarize → stap
      --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PW
    ```
 
+3. **Keep the Sparkle signing key safe.** Budgie trusts the public key already
+   committed in `Info.plist`; the matching private key is stored in this Mac's
+   login Keychain under account `com.maxheadley.Budgie`. Export an encrypted
+   backup with Sparkle's `generate_keys -x` command and keep it outside the
+   repository. On a different release Mac, import that same key with `-f`;
+   never generate a replacement key for an existing install base.
+
 ### Each release
 
 ```sh
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
 ./release.sh
+./publish-release.sh
 ```
 
-This produces `Budgie-<version>.dmg`, notarized and stapled. Upload it to a
-GitHub Release; users drag **Budgie** to **Applications** and launch it with no
-warning, even offline. Bump `CFBundleShortVersionString` / `CFBundleVersion` in
-`Info.plist` per release (the version names the DMG).
+This produces a notarized, stapled `Budgie-<version>.dmg` and a signed
+`appcast.xml`. `publish-release.sh` creates the matching GitHub Release and
+uploads both files. Installed copies read the feed through the release's stable
+`latest/download/appcast.xml` URL and can download and install future releases
+automatically.
+
+Bump both `CFBundleShortVersionString` and the monotonically increasing
+`CFBundleVersion` in `Info.plist` before every release. Sparkle uses the build
+number to decide whether an update is newer. The first release containing
+Sparkle must still be installed manually; automatic updating starts with the
+release after that.
 
 ### Local / ad-hoc builds (no Developer ID)
 

@@ -3,6 +3,7 @@
 #
 # The bundle embeds everything needed to run on any Apple-silicon Mac:
 #   Contents/MacOS/Budgie           the Swift menu-bar app
+#   Contents/Frameworks/Sparkle.framework
 #   Contents/Frameworks/Parakeet/   the parakeet.cpp C library + its ggml dylibs
 #   Contents/Resources/*.gguf       the streaming speech model
 #
@@ -62,6 +63,11 @@ BUNDLE="${STAGE}/${APP}"
 # ---------------------------------------------------------------------------
 echo "Compiling (release)..."
 swift build -c release
+SPARKLE_FRAMEWORK="${SPARKLE_FRAMEWORK:-${REPO_ROOT}/.build/release/Sparkle.framework}"
+if [[ ! -d "${SPARKLE_FRAMEWORK}" ]]; then
+  echo "Missing Sparkle framework: ${SPARKLE_FRAMEWORK}" >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Assemble the bundle skeleton (in the temp stage)
@@ -73,6 +79,7 @@ PKFW="${FW}/Parakeet"
 RES="${BUNDLE}/Contents/Resources"
 mkdir -p "${MACOS}" "${PKFW}" "${RES}"
 ditto .build/release/Budgie "${MACOS}/Budgie"
+ditto "${SPARKLE_FRAMEWORK}" "${FW}/Sparkle.framework"
 ditto Info.plist             "${BUNDLE}/Contents/Info.plist"
 # App icon (CFBundleIconFile -> Budgie.icns). Optional so a fresh clone without
 # the generated icns still builds; regenerate it with tools/make-icon.swift.
@@ -144,6 +151,16 @@ rewrite_local_dylib_refs() {
 }
 
 echo "Rewriting rpaths..."
+# SwiftPM places Sparkle.framework next to the command-line build product.
+# The app bundle stores it in Contents/Frameworks, so teach the executable
+# where to resolve its @rpath/Sparkle.framework load command after packaging.
+chmod u+w "${MACOS}/Budgie"
+if ! otool -l "${MACOS}/Budgie" |
+    awk '/LC_RPATH/{getline; getline; print $2}' |
+    grep -qx '@executable_path/../Frameworks'; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "${MACOS}/Budgie"
+fi
+
 # Each parakeet.cpp dylib is loaded from Frameworks/Parakeet/ and references its
 # siblings via @rpath/...; @loader_path points at the dir holding the dylib.
 for f in "${PARAKEET_BUNDLED_DYLIBS[@]}"; do
@@ -166,6 +183,11 @@ done
 # rejects un-timestamped or non-hardened code).
 BUNDLE_SIGN_OPTS=(--force --sign "${SIGN_IDENTITY}")
 DYLIB_SIGN_OPTS=(--force --sign "${SIGN_IDENTITY}")
+SPARKLE_SIGN_OPTS=(
+  --force
+  --sign "${SIGN_IDENTITY}"
+  --preserve-metadata=identifier,entitlements,flags
+)
 if [[ "${HARDENED}" == "1" ]]; then
   if [[ ! -f "${ENTITLEMENTS}" ]]; then
     echo "Missing entitlements file: ${ENTITLEMENTS}" >&2
@@ -173,6 +195,7 @@ if [[ "${HARDENED}" == "1" ]]; then
   fi
   BUNDLE_SIGN_OPTS+=(--options runtime --timestamp --entitlements "${ENTITLEMENTS}")
   DYLIB_SIGN_OPTS+=(--options runtime --timestamp)
+  SPARKLE_SIGN_OPTS+=(--timestamp)
   echo "Signing with '${SIGN_IDENTITY}' (hardened runtime, timestamped)..."
 else
   echo "Signing with '${SIGN_IDENTITY}'..."
@@ -181,6 +204,17 @@ xattr -cr "${BUNDLE}"
 for f in "${PARAKEET_BUNDLED_DYLIBS[@]}"; do
   codesign "${DYLIB_SIGN_OPTS[@]}" "$f"
 done
+SPARKLE="${FW}/Sparkle.framework/Versions/B"
+SPARKLE_NESTED_CODE=(
+  "${SPARKLE}/Autoupdate"
+  "${SPARKLE}/XPCServices/Downloader.xpc"
+  "${SPARKLE}/XPCServices/Installer.xpc"
+  "${SPARKLE}/Updater.app"
+)
+for target in "${SPARKLE_NESTED_CODE[@]}"; do
+  codesign "${SPARKLE_SIGN_OPTS[@]}" "${target}"
+done
+codesign "${SPARKLE_SIGN_OPTS[@]}" "${FW}/Sparkle.framework"
 codesign "${BUNDLE_SIGN_OPTS[@]}" "${BUNDLE}"
 
 echo "Verifying..."
