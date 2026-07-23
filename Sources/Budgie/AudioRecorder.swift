@@ -9,50 +9,102 @@ final class AudioRecorder {
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
 
     private let engine = AVAudioEngine()
-    private let lock = NSLock()
+    private let lock = NSCondition()
     private var buffers: [AVAudioPCMBuffer] = []
     private var inputFormat: AVAudioFormat?
     private var recording = false
+    private var activeCallbacks = 0
 
     func start() {
-        guard !recording else { return }
-        lock.lock(); buffers.removeAll(); lock.unlock()
+        lock.lock()
+        guard !recording else {
+            lock.unlock()
+            return
+        }
+        buffers.removeAll()
+        recording = true
+        lock.unlock()
 
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)
         guard format.sampleRate > 0 else {
             NSLog("Budgie: no input format — is microphone access granted?")
+            lock.lock(); recording = false; lock.unlock()
             return
         }
         inputFormat = format
 
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, let copy = buffer.copy() as? AVAudioPCMBuffer else { return }
-            self.lock.lock(); self.buffers.append(copy); self.lock.unlock()
-            self.onBuffer?(copy)
+            self.lock.lock()
+            guard self.recording else {
+                self.lock.unlock()
+                return
+            }
+            self.activeCallbacks += 1
+            let onBuffer = self.onBuffer
+            if onBuffer == nil {
+                self.buffers.append(copy)
+            }
+            self.lock.unlock()
+
+            if let onBuffer {
+                // Live mode owns the copied buffer and processes it immediately;
+                // keeping a second copy for a WAV that will never be written
+                // makes memory grow for the full duration of the dictation.
+                onBuffer(copy)
+            }
             self.reportLevel(of: buffer)
+
+            self.lock.lock()
+            self.activeCallbacks -= 1
+            if self.activeCallbacks == 0 {
+                self.lock.broadcast()
+            }
+            self.lock.unlock()
         }
 
         do {
             try engine.start()
-            recording = true
         } catch {
             NSLog("Budgie: audio engine failed to start: \(error)")
+            lock.lock(); recording = false; lock.unlock()
             input.removeTap(onBus: 0)
+            waitForActiveCallbacks()
         }
     }
 
     /// Stops capture and returns the WAV file URL, or nil if nothing usable.
     func stop(shouldWriteWav: Bool = true) -> URL? {
-        guard recording else { return nil }
+        lock.lock()
+        guard recording else {
+            lock.unlock()
+            return nil
+        }
         recording = false
+        lock.unlock()
+
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 
-        lock.lock(); let captured = buffers; buffers.removeAll(); lock.unlock()
+        lock.lock()
+        while activeCallbacks > 0 {
+            lock.wait()
+        }
+        let captured = buffers
+        buffers.removeAll()
+        lock.unlock()
         DispatchQueue.main.async { self.onLevel?(0) }
         guard shouldWriteWav else { return nil }
         return writeWav(from: captured)
+    }
+
+    private func waitForActiveCallbacks() {
+        lock.lock()
+        while activeCallbacks > 0 {
+            lock.wait()
+        }
+        lock.unlock()
     }
 
     /// Computes an RMS level from a buffer and maps it to a perceptual 0...1
