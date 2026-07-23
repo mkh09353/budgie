@@ -55,7 +55,13 @@ final class StreamingTranscriber: @unchecked Sendable {
     var onWarmChange: ((Bool) -> Void)?
     var onPartial: ((String) -> Void)?
 
+    private static let feedChunkSampleCount = 4_000
+    private static let maximumPendingBuffers = 64
+
     private let queue = DispatchQueue(label: "com.maxheadley.budgie.streaming")
+    private let pendingBuffers = CoalescingQueue<AVAudioPCMBuffer>(
+        capacity: maximumPendingBuffers
+    )
     private let streamFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 16_000,
@@ -69,6 +75,9 @@ final class StreamingTranscriber: @unchecked Sendable {
     private var loaded = false
     private var pendingError: Error?
     private var runningTranscript = ""
+    private var pendingSamples: [Float] = []
+    private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
 
     func warmUp() {
         queue.async {
@@ -83,9 +92,14 @@ final class StreamingTranscriber: @unchecked Sendable {
     }
 
     func beginSession() {
+        // Clear stale producer work before accepting the first buffer for this
+        // session. Doing this outside the serial block prevents a fast audio
+        // callback from being enqueued and then erased during cold start.
+        pendingBuffers.reset()
         queue.async {
             self.pendingError = nil
             self.runningTranscript = ""
+            self.pendingSamples.removeAll(keepingCapacity: true)
             do {
                 try self.ensureLoaded()
                 guard let context = self.context else { throw StreamingTranscriberError.notLoaded }
@@ -100,20 +114,11 @@ final class StreamingTranscriber: @unchecked Sendable {
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
-        guard let copy = buffer.copy() as? AVAudioPCMBuffer else { return }
-        queue.async {
-            guard self.pendingError == nil else { return }
-            do {
-                try self.ensureLoaded()
-                guard let stream = self.stream else { throw StreamingTranscriberError.notLoaded }
-                let samples = try self.pcm16kMono(from: copy)
-                guard !samples.isEmpty else { return }
-                let delta = try stream.feed(samples)
-                self.appendTranscriptDelta(delta)
-            } catch {
-                self.pendingError = error
-                NSLog("Budgie: streaming chunk failed: \(error)")
-            }
+        switch pendingBuffers.enqueue(buffer) {
+        case .scheduleDrain:
+            queue.async { self.drainPendingBuffers() }
+        case .queued, .rejected:
+            break
         }
     }
 
@@ -124,13 +129,16 @@ final class StreamingTranscriber: @unchecked Sendable {
         queue.async {
             defer { semaphore.signal() }
             do {
+                self.drainPendingBuffers()
                 if let pendingError = self.pendingError { throw pendingError }
                 try self.ensureLoaded()
                 guard let stream = self.stream else { throw StreamingTranscriberError.notLoaded }
+                try self.feedPendingSamples(to: stream, flush: true)
                 let tail = try stream.finalize()
                 self.appendTranscriptDelta(tail)
                 stream.free()
                 self.stream = nil
+                self.pendingSamples.removeAll(keepingCapacity: true)
                 result = .success(
                     self.runningTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
@@ -147,6 +155,8 @@ final class StreamingTranscriber: @unchecked Sendable {
         queue.async {
             self.pendingError = nil
             self.runningTranscript = ""
+            self.pendingSamples.removeAll(keepingCapacity: true)
+            self.pendingBuffers.reset()
             self.stream?.free()
             self.stream = nil
         }
@@ -197,7 +207,80 @@ final class StreamingTranscriber: @unchecked Sendable {
         loaded = false
         pendingError = nil
         runningTranscript = ""
+        pendingSamples.removeAll(keepingCapacity: true)
+        pendingBuffers.reset()
+        converter = nil
+        converterInputFormat = nil
         setWarm(false)
+    }
+
+    private func drainPendingBuffers() {
+        guard pendingError == nil else {
+            pendingBuffers.reset()
+            return
+        }
+
+        do {
+            while true {
+                let batch = pendingBuffers.takeBatch()
+                if batch.didOverflow {
+                    NSLog(
+                        "Budgie: Live transcription dropped excess audio while CPU load was high; "
+                            + "preserving the active transcript"
+                    )
+                }
+                guard !batch.elements.isEmpty else { return }
+
+                try ensureLoaded()
+                guard let stream else { throw StreamingTranscriberError.notLoaded }
+                for buffer in batch.elements {
+                    pendingSamples.append(contentsOf: try pcm16kMono(from: buffer))
+                }
+                try feedPendingSamples(to: stream, flush: false)
+            }
+        } catch {
+            pendingError = error
+            pendingSamples.removeAll(keepingCapacity: true)
+            pendingBuffers.reset()
+            NSLog("Budgie: streaming chunk failed: \(error)")
+        }
+    }
+
+    private func feedPendingSamples(
+        to stream: ParakeetStreamSession,
+        flush: Bool
+    ) throws {
+        let chunkSize = Self.feedChunkSampleCount
+        var consumed = 0
+
+        while pendingSamples.count - consumed >= chunkSize {
+            let end = consumed + chunkSize
+            try feed(pendingSamples[consumed..<end], to: stream)
+            consumed = end
+        }
+        if flush, consumed < pendingSamples.count {
+            try feed(pendingSamples[consumed...], to: stream)
+            consumed = pendingSamples.count
+        }
+        if consumed > 0 {
+            pendingSamples.removeFirst(consumed)
+        }
+    }
+
+    private func feed(_ samples: ArraySlice<Float>, to stream: ParakeetStreamSession) throws {
+        guard !samples.isEmpty else { return }
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let delta = try stream.feed(samples)
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+        let audioDuration = Double(samples.count) / streamFormat.sampleRate
+        if elapsed > audioDuration {
+            NSLog(
+                "Budgie: streaming feed lag — %.0f ms inference for %.0f ms audio",
+                elapsed * 1_000,
+                audioDuration * 1_000
+            )
+        }
+        appendTranscriptDelta(delta)
     }
 
     private func pcm16kMono(from buffer: AVAudioPCMBuffer) throws -> [Float] {
@@ -205,8 +288,19 @@ final class StreamingTranscriber: @unchecked Sendable {
             return try floatSamples(from: buffer)
         }
 
-        guard let converter = AVAudioConverter(from: buffer.format, to: streamFormat) else {
-            throw StreamingTranscriberError.resampleFailed("could not create converter")
+        let converter: AVAudioConverter
+        if let existing = self.converter,
+           let inputFormat = converterInputFormat,
+           formatsMatch(inputFormat, buffer.format) {
+            existing.reset()
+            converter = existing
+        } else {
+            guard let created = AVAudioConverter(from: buffer.format, to: streamFormat) else {
+                throw StreamingTranscriberError.resampleFailed("could not create converter")
+            }
+            self.converter = created
+            converterInputFormat = buffer.format
+            converter = created
         }
 
         let ratio = streamFormat.sampleRate / buffer.format.sampleRate
@@ -243,6 +337,13 @@ final class StreamingTranscriber: @unchecked Sendable {
         format.commonFormat == .pcmFormatFloat32 &&
             format.channelCount == 1 &&
             abs(format.sampleRate - streamFormat.sampleRate) < 0.5
+    }
+
+    private func formatsMatch(_ lhs: AVAudioFormat, _ rhs: AVAudioFormat) -> Bool {
+        lhs.commonFormat == rhs.commonFormat &&
+            lhs.channelCount == rhs.channelCount &&
+            lhs.isInterleaved == rhs.isInterleaved &&
+            abs(lhs.sampleRate - rhs.sampleRate) < 0.5
     }
 
     private func floatSamples(from buffer: AVAudioPCMBuffer) throws -> [Float] {
@@ -410,7 +511,7 @@ private final class ParakeetStreamSession {
         free()
     }
 
-    func feed(_ samples: [Float]) throws -> String {
+    func feed(_ samples: ArraySlice<Float>) throws -> String {
         guard samples.count <= Int(CInt.max) else {
             throw StreamingTranscriberError.streamFeedFailed("too many samples")
         }
