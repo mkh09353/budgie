@@ -3,7 +3,7 @@ import SwiftUI
 import Combine
 import Sparkle
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var prefsWindow: NSWindow?
@@ -262,7 +262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered, defer: false)
             window.title = "Set Up Budgie"
             window.contentView = NSHostingView(rootView: view)
-            window.isReleasedWhenClosed = false
+            window.isReleasedWhenClosed = true
+            window.delegate = self
             // Float above System Settings so the user watches the checkmark
             // flip as they toggle each permission.
             window.level = .floating
@@ -271,6 +272,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         onboardingWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === onboardingWindow else { return }
+        // Releasing the hosting view also cancels OnboardingView's autoconnected
+        // permission timer. Keeping this closed window alive polled TCC forever.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, window === self.onboardingWindow else { return }
+            window.contentView = nil
+            self.onboardingWindow = nil
+        }
     }
 
     // MARK: - Hotkey

@@ -56,11 +56,10 @@ final class StreamingTranscriber: @unchecked Sendable {
     var onPartial: ((String) -> Void)?
 
     private static let feedChunkSampleCount = 4_000
-    private static let maximumPendingBuffers = 64
 
     private let queue = DispatchQueue(label: "com.maxheadley.budgie.streaming")
     private let pendingBuffers = CoalescingQueue<AVAudioPCMBuffer>(
-        capacity: maximumPendingBuffers
+        capacity: StreamingRuntimePolicy.maximumPendingBufferCount
     )
     private let streamFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -114,10 +113,14 @@ final class StreamingTranscriber: @unchecked Sendable {
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
-        switch pendingBuffers.enqueue(buffer) {
+        let limit = StreamingRuntimePolicy.pendingBufferLimit(
+            sampleRate: buffer.format.sampleRate,
+            frameCount: Int(buffer.frameLength)
+        )
+        switch pendingBuffers.enqueue(buffer, limit: limit) {
         case .scheduleDrain:
             queue.async { self.drainPendingBuffers() }
-        case .queued, .rejected:
+        case .queued, .replacedOldest:
             break
         }
     }
@@ -225,8 +228,8 @@ final class StreamingTranscriber: @unchecked Sendable {
                 let batch = pendingBuffers.takeBatch()
                 if batch.didOverflow {
                     NSLog(
-                        "Budgie: Live transcription dropped excess audio while CPU load was high; "
-                            + "preserving the active transcript"
+                        "Budgie: Live transcription discarded stale audio while CPU load was high; "
+                            + "keeping latency under one second"
                     )
                 }
                 guard !batch.elements.isEmpty else { return }
@@ -377,7 +380,15 @@ final class StreamingTranscriber: @unchecked Sendable {
 /// (`StandardTranscriber`); both load the same `libparakeet.dylib` and reuse
 /// these typed symbols.
 final class ParakeetLibrary {
+    // parakeet.cpp does not expose its process-global thread setting through
+    // the flat C API yet. Use the current C++ exports when present, and log a
+    // fallback instead of making dictation depend on that private ABI.
+    private static let setThreadCountSymbol = "_ZN2pk15set_num_threadsEi"
+    private static let getThreadCountSymbol = "_ZN2pk11num_threadsEv"
+
     typealias AbiVersion = @convention(c) () -> CInt
+    typealias SetNumThreads = @convention(c) (CInt) -> Void
+    typealias NumThreads = @convention(c) () -> CInt
     typealias Load = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?
     typealias Free = @convention(c) (UnsafeMutableRawPointer?) -> Void
     typealias TranscribePath = @convention(c) (
@@ -398,6 +409,8 @@ final class ParakeetLibrary {
     typealias LastError = @convention(c) (UnsafeMutableRawPointer?) -> UnsafePointer<CChar>?
 
     let handle: UnsafeMutableRawPointer
+    private let numThreads: NumThreads?
+    let threadLimitApplied: Bool
     let load: Load
     let free: Free
     let transcribePath: TranscribePath
@@ -426,16 +439,57 @@ final class ParakeetLibrary {
                 )
             }
 
+            let setNumThreads: SetNumThreads? = dlsym(
+                opened,
+                Self.setThreadCountSymbol
+            ).map { unsafeBitCast($0, to: SetNumThreads.self) }
+            let numThreads: NumThreads? = dlsym(
+                opened,
+                Self.getThreadCountSymbol
+            ).map { unsafeBitCast($0, to: NumThreads.self) }
+            let load: Load = try Self.symbol("parakeet_capi_load", from: opened)
+            let free: Free = try Self.symbol("parakeet_capi_free", from: opened)
+            let transcribePath: TranscribePath = try Self.symbol(
+                "parakeet_capi_transcribe_path",
+                from: opened
+            )
+            let streamBegin: StreamBegin = try Self.symbol("parakeet_capi_stream_begin", from: opened)
+            let streamFeed: StreamFeed = try Self.symbol("parakeet_capi_stream_feed", from: opened)
+            let streamFinalize: StreamFinalize = try Self.symbol(
+                "parakeet_capi_stream_finalize",
+                from: opened
+            )
+            let streamFree: StreamFree = try Self.symbol("parakeet_capi_stream_free", from: opened)
+            let freeString: FreeString = try Self.symbol("parakeet_capi_free_string", from: opened)
+            let lastError: LastError = try Self.symbol("parakeet_capi_last_error", from: opened)
+
+            let threadLimitApplied: Bool
+            if let setNumThreads, let numThreads {
+                setNumThreads(CInt(StreamingRuntimePolicy.inferenceThreadCount))
+                threadLimitApplied = Int(numThreads()) == StreamingRuntimePolicy.inferenceThreadCount
+            } else {
+                threadLimitApplied = false
+            }
+            if !threadLimitApplied {
+                NSLog(
+                    "Budgie: parakeet.cpp thread-limit exports unavailable; using library default"
+                )
+            }
+
+            // Assign only after every throwing operation so a failed initializer
+            // closes `opened` exactly once in catch.
             self.handle = opened
-            self.load = try Self.symbol("parakeet_capi_load", from: opened)
-            self.free = try Self.symbol("parakeet_capi_free", from: opened)
-            self.transcribePath = try Self.symbol("parakeet_capi_transcribe_path", from: opened)
-            self.streamBegin = try Self.symbol("parakeet_capi_stream_begin", from: opened)
-            self.streamFeed = try Self.symbol("parakeet_capi_stream_feed", from: opened)
-            self.streamFinalize = try Self.symbol("parakeet_capi_stream_finalize", from: opened)
-            self.streamFree = try Self.symbol("parakeet_capi_stream_free", from: opened)
-            self.freeString = try Self.symbol("parakeet_capi_free_string", from: opened)
-            self.lastError = try Self.symbol("parakeet_capi_last_error", from: opened)
+            self.numThreads = numThreads
+            self.threadLimitApplied = threadLimitApplied
+            self.load = load
+            self.free = free
+            self.transcribePath = transcribePath
+            self.streamBegin = streamBegin
+            self.streamFeed = streamFeed
+            self.streamFinalize = streamFinalize
+            self.streamFree = streamFree
+            self.freeString = freeString
+            self.lastError = lastError
         } catch {
             dlclose(opened)
             throw error
@@ -444,6 +498,10 @@ final class ParakeetLibrary {
 
     deinit {
         dlclose(handle)
+    }
+
+    var configuredThreadCount: Int? {
+        numThreads.map { Int($0()) }
     }
 
     private static func symbol<T>(_ name: String, from handle: UnsafeMutableRawPointer) throws -> T {

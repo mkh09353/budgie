@@ -17,15 +17,28 @@ final class CoalescingQueueTests: XCTestCase {
         XCTAssertEqual(queue.enqueue(4), .scheduleDrain)
     }
 
-    func testRejectsWorkPastCapacityAndReportsOverflowToDrain() {
+    func testKeepsNewestWorkPastCapacityAndReportsOverflowToDrain() {
         let queue = CoalescingQueue<Int>(capacity: 2)
 
         XCTAssertEqual(queue.enqueue(1), .scheduleDrain)
         XCTAssertEqual(queue.enqueue(2), .queued)
-        XCTAssertEqual(queue.enqueue(3), .rejected)
+        XCTAssertEqual(queue.enqueue(3), .replacedOldest)
 
         let batch = queue.takeBatch()
-        XCTAssertEqual(batch.elements, [1, 2])
+        XCTAssertEqual(batch.elements, [2, 3])
+        XCTAssertTrue(batch.didOverflow)
+    }
+
+    func testRuntimeLimitTrimsPreviouslyQueuedWork() {
+        let queue = CoalescingQueue<Int>(capacity: 4)
+
+        XCTAssertEqual(queue.enqueue(1), .scheduleDrain)
+        XCTAssertEqual(queue.enqueue(2), .queued)
+        XCTAssertEqual(queue.enqueue(3), .queued)
+        XCTAssertEqual(queue.enqueue(4, limit: 2), .replacedOldest)
+
+        let batch = queue.takeBatch()
+        XCTAssertEqual(batch.elements, [3, 4])
         XCTAssertTrue(batch.didOverflow)
     }
 
@@ -45,7 +58,10 @@ final class CoalescingQueueTests: XCTestCase {
 
         XCTAssertEqual(results.filter { $0 == .scheduleDrain }.count, 1)
         XCTAssertEqual(results.filter { $0 == .queued }.count, capacity - 1)
-        XCTAssertEqual(results.filter { $0 == .rejected }.count, producerCount - capacity)
+        XCTAssertEqual(
+            results.filter { $0 == .replacedOldest }.count,
+            producerCount - capacity
+        )
 
         let batch = queue.takeBatch()
         XCTAssertEqual(batch.elements.count, capacity)

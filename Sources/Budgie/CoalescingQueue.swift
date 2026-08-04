@@ -7,7 +7,7 @@ final class CoalescingQueue<Element>: @unchecked Sendable {
     enum EnqueueResult: Equatable {
         case scheduleDrain
         case queued
-        case rejected
+        case replacedOldest
     }
 
     struct Batch {
@@ -27,16 +27,20 @@ final class CoalescingQueue<Element>: @unchecked Sendable {
         elements.reserveCapacity(capacity)
     }
 
-    func enqueue(_ element: Element) -> EnqueueResult {
+    func enqueue(_ element: Element, limit requestedLimit: Int? = nil) -> EnqueueResult {
         lock.lock()
         defer { lock.unlock() }
 
-        guard elements.count < capacity else {
+        let limit = min(capacity, max(1, requestedLimit ?? capacity))
+        var replacedOldest = false
+        while elements.count >= limit {
+            elements.removeFirst()
             didOverflow = true
-            return .rejected
+            replacedOldest = true
         }
 
         elements.append(element)
+        if replacedOldest { return .replacedOldest }
         guard !drainScheduled else { return .queued }
         drainScheduled = true
         return .scheduleDrain

@@ -34,7 +34,11 @@ final class AudioRecorder {
         }
         inputFormat = format
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+        input.installTap(
+            onBus: 0,
+            bufferSize: AVAudioFrameCount(StreamingRuntimePolicy.audioTapBufferFrames),
+            format: format
+        ) { [weak self] buffer, _ in
             guard let self, let copy = buffer.copy() as? AVAudioPCMBuffer else { return }
             self.lock.lock()
             guard self.recording else {
