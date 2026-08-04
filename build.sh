@@ -29,6 +29,7 @@ STREAMING_MODEL="${STREAMING_MODEL:-${REPO_ROOT}/models/realtime_eou_120m-v1-q8_
 ICON="${ICON:-${REPO_ROOT}/Budgie.icns}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-MacBird Development}"
 ENTITLEMENTS="${ENTITLEMENTS:-${REPO_ROOT}/Budgie.entitlements}"
+SWIFT_SCRATCH_PATH="${SWIFT_SCRATCH_PATH:-}"
 
 # Notarization requires the hardened runtime, a secure timestamp, and the
 # audio-input entitlement. Auto-enable these for a "Developer ID" identity;
@@ -62,8 +63,13 @@ BUNDLE="${STAGE}/${APP}"
 # 1. Compile the Swift app
 # ---------------------------------------------------------------------------
 echo "Compiling (release)..."
-swift build -c release
-SPARKLE_FRAMEWORK="${SPARKLE_FRAMEWORK:-${REPO_ROOT}/.build/release/Sparkle.framework}"
+SWIFT_BUILD_ARGS=(-c release)
+if [[ -n "${SWIFT_SCRATCH_PATH}" ]]; then
+  SWIFT_BUILD_ARGS+=(--scratch-path "${SWIFT_SCRATCH_PATH}")
+fi
+SWIFT_PRODUCTS="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
+swift build "${SWIFT_BUILD_ARGS[@]}"
+SPARKLE_FRAMEWORK="${SPARKLE_FRAMEWORK:-${SWIFT_PRODUCTS}/Sparkle.framework}"
 if [[ ! -d "${SPARKLE_FRAMEWORK}" ]]; then
   echo "Missing Sparkle framework: ${SPARKLE_FRAMEWORK}" >&2
   exit 1
@@ -78,7 +84,7 @@ FW="${BUNDLE}/Contents/Frameworks"
 PKFW="${FW}/Parakeet"
 RES="${BUNDLE}/Contents/Resources"
 mkdir -p "${MACOS}" "${PKFW}" "${RES}"
-ditto .build/release/Budgie "${MACOS}/Budgie"
+ditto "${SWIFT_PRODUCTS}/Budgie" "${MACOS}/Budgie"
 ditto "${SPARKLE_FRAMEWORK}" "${FW}/Sparkle.framework"
 ditto Info.plist             "${BUNDLE}/Contents/Info.plist"
 # App icon (CFBundleIconFile -> Budgie.icns). Optional so a fresh clone without
