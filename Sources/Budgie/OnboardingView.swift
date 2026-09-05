@@ -14,7 +14,7 @@ struct OnboardingView: View {
 
     private let poll = Timer.publish(every: 0.6, on: .main, in: .common).autoconnect()
 
-    private enum Step { case microphone, accessibility, inputMonitoring }
+    private enum Step: Equatable { case microphone, accessibility, inputMonitoring }
 
     /// The first permission still missing — the row whose action is shown.
     private var activeStep: Step? {
@@ -38,6 +38,7 @@ struct OnboardingView: View {
         }
         .padding(.bottom, 18)
         .frame(width: 440, height: 478)
+        .animation(.easeInOut(duration: 0.2), value: activeStep)
         .onAppear { state.refreshPermissions() }
         .onReceive(poll) { _ in state.refreshPermissions() }
     }
@@ -85,12 +86,10 @@ struct OnboardingView: View {
             index: 2,
             title: "Accessibility",
             caption: "Lets Budgie type the transcript at your cursor. "
-                + "Click Grant Access, then switch Budgie on in the list.",
+                + "Drag Budgie into the Accessibility list, then switch it on.",
             status: status(for: .accessibility),
             buttonTitle: "Grant Access",
-            buttonAction: { Permissions.ensureAccessibility() },
-            linkTitle: "Open System Settings",
-            linkAction: { Permissions.openSettings(.accessibility) })
+            buttonAction: { Permissions.openSettings(.accessibility) })
     }
 
     private var inputMonitoringRow: some View {
@@ -108,7 +107,7 @@ struct OnboardingView: View {
                 if needsRelaunch {
                     Permissions.relaunch()
                 } else {
-                    Permissions.requestInputMonitoring()
+                    Permissions.openSettings(.inputMonitoring)
                 }
             },
             linkTitle: needsRelaunch ? nil : "Open System Settings",

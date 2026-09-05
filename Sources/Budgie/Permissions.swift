@@ -3,11 +3,9 @@ import AVFoundation
 import ApplicationServices
 import IOKit.hid
 
-/// Wraps the three privacy permissions Budgie needs. The status checks are
-/// cheap and safe to poll; the request calls surface the matching system
-/// prompt (and register Budgie in the System Settings list, so the user has
-/// something to toggle). Requests are driven one at a time by the setup
-/// window instead of all at once at launch, so the dialogs never stack.
+/// Live status for Budgie's three privacy permissions. Setup requests the
+/// microphone through macOS and guides users through the other two lists
+/// with an app-file drag helper, one permission at a time.
 enum Permissions {
     // MARK: - Microphone
 
@@ -31,24 +29,10 @@ enum Permissions {
 
     static var accessibilityGranted: Bool { AXIsProcessTrusted() }
 
-    /// Prompts for Accessibility access (needed to post synthetic keystrokes)
-    /// and registers Budgie in the Accessibility list.
-    @discardableResult
-    static func ensureAccessibility() -> Bool {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        return AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
-    }
-
     // MARK: - Input Monitoring
 
     static var inputMonitoringGranted: Bool {
         IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
-    }
-
-    /// Shows the system Input Monitoring prompt and registers Budgie in the
-    /// Input Monitoring list.
-    static func requestInputMonitoring() {
-        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
     }
 
     // MARK: - System Settings deep links
@@ -60,8 +44,11 @@ enum Permissions {
     }
 
     static func openSettings(_ pane: SettingsPane) {
+        PermissionDragController.shared.dismiss()
         let str = "x-apple.systempreferences:com.apple.preference.security?\(pane.rawValue)"
-        if let url = URL(string: str) { NSWorkspace.shared.open(url) }
+        if let url = URL(string: str), NSWorkspace.shared.open(url), pane != .microphone {
+            PermissionDragController.shared.show(for: pane)
+        }
     }
 
     // MARK: - Relaunch

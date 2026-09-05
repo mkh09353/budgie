@@ -162,13 +162,19 @@ the first time: right-click the app -> **Open** and confirm, or run
 
 ## First launch — grant three permissions
 
-Budgie appears as a bird icon in the menu bar. Click it and open
-**Settings… -> Permissions** — the tab shows each permission's live status
-with a button to the matching System Settings pane:
+Budgie walks through permissions in its setup assistant. You can reopen it
+from **Settings… -> Permissions -> Open Setup Assistant…**:
 
-1. **Microphone** — prompted automatically on first recording.
-2. **Input Monitoring** — to see the push-to-talk key.
-3. **Accessibility** — to type the transcript at the cursor.
+1. **Microphone** — allow the native macOS prompt to record your voice.
+2. **Accessibility** — click **Grant Access**, then drag Budgie from the floating
+   helper into the System Settings list and switch it on.
+3. **Input Monitoring** — the same drag-and-enable flow lets Budgie detect the
+   push-to-talk key. If macOS asks, choose **Quit & Reopen**.
+
+If Budgie is already in a list, just enable its switch. The helper detects the
+permission and dismisses itself; setup updates automatically. The same helper
+is available from the Permissions tab's **Open Settings** buttons. Dragging
+requires a packaged `Budgie.app`; command-line builds show manual instructions.
 
 The Input Monitoring event tap is created at startup; Budgie retries it when
 it next becomes active, so a relaunch usually isn't needed after granting.

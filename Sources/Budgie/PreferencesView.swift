@@ -187,17 +187,17 @@ private struct PermissionsTab: View {
                 title: "Microphone",
                 detail: "Record your voice.",
                 granted: state.micGranted,
-                settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+                pane: .microphone)
             PermissionRow(
                 title: "Input Monitoring",
                 detail: "Detect the push-to-talk key. Relaunch after granting.",
                 granted: state.inputMonitoringGranted,
-                settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+                pane: .inputMonitoring)
             PermissionRow(
                 title: "Accessibility",
                 detail: "Type the transcript at your cursor.",
                 granted: state.accessibilityGranted,
-                settingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                pane: .accessibility)
 
             Spacer()
             HStack {
@@ -216,7 +216,7 @@ private struct PermissionRow: View {
     let title: String
     let detail: String
     let granted: Bool
-    let settingsURL: String
+    let pane: Permissions.SettingsPane
 
     var body: some View {
         HStack(spacing: 10) {
@@ -230,7 +230,7 @@ private struct PermissionRow: View {
             Spacer()
             if !granted {
                 Button("Open Settings") {
-                    if let url = URL(string: settingsURL) { NSWorkspace.shared.open(url) }
+                    Permissions.openSettings(pane)
                 }
                 .controlSize(.small)
             }

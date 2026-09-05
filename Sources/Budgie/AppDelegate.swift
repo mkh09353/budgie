@@ -264,9 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.contentView = NSHostingView(rootView: view)
             window.isReleasedWhenClosed = true
             window.delegate = self
-            // Float above System Settings so the user watches the checkmark
-            // flip as they toggle each permission.
-            window.level = .floating
+            // The compact drag helper stays above System Settings instead.
             window.center()
             onboardingWindow = window
         }
