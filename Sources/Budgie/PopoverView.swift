@@ -7,6 +7,7 @@ struct PopoverView: View {
     @ObservedObject var state: AppState
     @ObservedObject var prefs: UserPrefs
     var onOpenSettings: () -> Void
+    var onCheckForUpdates: () -> Void
     var onQuit: () -> Void
 
     var body: some View {
@@ -164,10 +165,16 @@ struct PopoverView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(spacing: 0) {
-            FooterButton(title: "Settings…", systemImage: "gearshape", action: onOpenSettings)
-            Divider().frame(height: 22)
-            FooterButton(title: "Quit", systemImage: "power", action: onQuit)
+        VStack(spacing: 4) {
+            FooterButton(title: "Check for Updates…",
+                         systemImage: "arrow.triangle.2.circlepath",
+                         action: onCheckForUpdates)
+            Divider()
+            HStack(spacing: 0) {
+                FooterButton(title: "Settings…", systemImage: "gearshape", action: onOpenSettings)
+                Divider().frame(height: 22)
+                FooterButton(title: "Quit", systemImage: "power", action: onQuit)
+            }
         }
         .padding(4)
     }
@@ -341,7 +348,7 @@ private struct RecentRow: View {
     }
 }
 
-/// A footer action with an icon, filling half the footer width.
+/// A footer action with an icon, filling the available width.
 private struct FooterButton: View {
     let title: String
     let systemImage: String

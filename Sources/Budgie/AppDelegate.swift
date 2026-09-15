@@ -151,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.popover.performClose(nil)
                 self?.openPreferences()
             },
+            onCheckForUpdates: { [weak self] in self?.checkForUpdates() },
             onQuit: { NSApp.terminate(nil) }
         )
         let host = NSHostingController(rootView: root)
@@ -214,6 +215,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - Preferences window
 
+    private func checkForUpdates() {
+        popover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        updaterController.checkForUpdates(nil)
+    }
+
     private func openPreferences() {
         if prefsWindow == nil {
             let view = PreferencesView(
@@ -224,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 },
                 onRunSetup: { [weak self] in self?.openOnboarding() },
                 onCheckForUpdates: { [weak self] in
-                    self?.updaterController.checkForUpdates(nil)
+                    self?.checkForUpdates()
                 }
             )
             let window = NSWindow(
