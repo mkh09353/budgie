@@ -90,8 +90,8 @@ enum Config {
         return "\(devRoot)/parakeet.cpp/build-shared/libparakeet.dylib"
     }()
 
-    /// Ignore key taps shorter than this — avoids firing on an accidental brush.
-    static let minRecordingSeconds = 0.3
+    /// Ignore accidental key brushes while allowing brief, single-word dictation.
+    static let minRecordingSeconds = 0.1
 
     /// Unload a warm model after this long with no use, reclaiming its memory.
     /// Re-warming `mmap`s the GGUF, so it costs only a fraction of a second.
