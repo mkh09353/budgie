@@ -18,7 +18,8 @@ let package = Package(
         .testTarget(
             name: "BudgieTests",
             dependencies: ["Budgie"],
-            path: "Tests/BudgieTests"
+            path: "Tests/BudgieTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )

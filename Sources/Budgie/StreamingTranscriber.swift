@@ -552,10 +552,12 @@ final class ParakeetContext {
     }
 }
 
-private final class ParakeetStreamSession {
+final class ParakeetStreamSession {
     private let context: ParakeetContext
-    private let pointer: UnsafeMutableRawPointer
+    private var pointer: UnsafeMutableRawPointer
     private var isFreed = false
+    private var hasEmittedText = false
+    private var needsUtteranceSeparator = false
 
     init(context: ParakeetContext) throws {
         self.context = context
@@ -583,13 +585,38 @@ private final class ParakeetStreamSession {
                 CInt(buffer.count),
                 &eou
             )
-            return try takeString(text, failure: .streamFeedFailed(context.lastErrorMessage))
+            var delta = separateUtterance(try takeString(
+                text, failure: .streamFeedFailed(context.lastErrorMessage)
+            ))
+            if eou != 0 {
+                // The EOU model can remain blank after an utterance ends. Drain
+                // its buffered tail, then continue the held-key recording with
+                // fresh decoder state. The outer transcript stays intact.
+                delta += try finalize()
+                guard let next = context.library.streamBegin(context.pointer) else {
+                    throw StreamingTranscriberError.streamStartFailed(context.lastErrorMessage)
+                }
+                context.library.streamFree(pointer)
+                pointer = next
+                needsUtteranceSeparator = hasEmittedText
+            }
+            return delta
         }
     }
 
     func finalize() throws -> String {
         let text = context.library.streamFinalize(pointer)
-        return try takeString(text, failure: .streamFinalizeFailed(context.lastErrorMessage))
+        return separateUtterance(try takeString(
+            text, failure: .streamFinalizeFailed(context.lastErrorMessage)
+        ))
+    }
+
+    private func separateUtterance(_ text: String) -> String {
+        guard !text.isEmpty else { return text }
+        let prefix = needsUtteranceSeparator && text.first?.isWhitespace == false ? " " : ""
+        needsUtteranceSeparator = false
+        hasEmittedText = true
+        return prefix + text
     }
 
     func free() {
