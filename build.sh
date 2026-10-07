@@ -49,6 +49,14 @@ if [[ ! -f "${PARAKEET_BUILD}/libparakeet.dylib" ]]; then
   exit 1
 fi
 
+# A native ggml build targets this Mac's CPU (e.g. i8mm/SME on an M4) and
+# crashes with an illegal instruction on older Apple-silicon Macs.
+if grep -q '^GGML_NATIVE:BOOL=ON' "${PARAKEET_BUILD}/CMakeCache.txt" 2>/dev/null; then
+  echo "parakeet.cpp was built with GGML_NATIVE=ON: ${PARAKEET_BUILD}" >&2
+  echo "Rebuild it with the README's portable flags so it runs on every Apple-silicon Mac." >&2
+  exit 1
+fi
+
 if [[ ! -f "${STREAMING_MODEL}" ]]; then
   echo "Missing streaming model: ${STREAMING_MODEL}" >&2
   echo "Run the README's Live model download step first." >&2

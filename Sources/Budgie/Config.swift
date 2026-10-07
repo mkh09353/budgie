@@ -19,14 +19,20 @@ enum Config {
 
     private static let runningFromAppBundle = Bundle.main.bundleURL.pathExtension == "app"
 
-    /// The Punctuated-mode NVIDIA Parakeet TDT 0.6b v3 model, run through
-    /// parakeet.cpp's C library. It is not bundled; Punctuated mode
-    /// downloads it into Application Support on first use.
-    static let standardModelFileName = "tdt-0.6b-v3-q4_k.gguf"
+    /// The Punctuated-mode model: Moondream's parakeet-redux, a ternary
+    /// (1.58-bit) Parakeet TDT 0.6b v3, kept packed and run on parakeet.cpp's
+    /// native ternary CPU kernel. It is CPU-only and offline-only (no
+    /// streaming), which matches how Budgie runs it. It is not bundled;
+    /// Punctuated mode downloads it into Application Support on first use.
+    static let standardModelFileName = "redux-packed.gguf"
 
     static let standardModelDownloadURL = URL(
-        string: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt-0.6b-v3-q4_k.gguf"
+        string: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-packed.gguf"
     )!
+
+    /// Punctuated models earlier Budgie versions downloaded into the model
+    /// cache. Nothing reads them anymore, so launch deletes them.
+    static let legacyModelFileNames = ["tdt-0.6b-v3-q4_k.gguf"]
 
     static let applicationSupportDirectoryURL: URL = {
         let base = FileManager.default.urls(
@@ -47,7 +53,7 @@ enum Config {
 
     static let standardModelPath: String = {
         if let bundled = Bundle.main.url(
-            forResource: "tdt-0.6b-v3-q4_k",
+            forResource: "redux-packed",
             withExtension: "gguf"
         ) {
             return bundled.path

@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             state.dictation = .error("Finish setup to start dictating.")
         }
         refreshPunctuatedModelStatus()
+        StandardTranscriber.removeLegacyModels()
 
         // Start the selected engine now so the first dictation finds it warm.
         if prefs.transcriptionMode == .standard && !StandardTranscriber.standardModelAvailable {

@@ -7,8 +7,9 @@ transcribe. The text is typed into whatever app has focus — or copied to the
 clipboard, your choice in Settings. Runs fully offline on parakeet.cpp's C
 library by default: Live mode types words as you speak via the cache-aware
 Parakeet EOU model bundled in the app. Optional Punctuated mode waits until you
-release the key, then transcribes the finished recording with the larger NVIDIA
-Parakeet TDT 0.6b model, downloading it on first use.
+release the key, then transcribes the finished recording with Moondream's
+[parakeet-redux](https://huggingface.co/moondream/parakeet-redux) (a ternary
+Parakeet TDT 0.6b v3, 213 MB), downloading it on first use.
 
 ## Building from source
 
@@ -39,11 +40,15 @@ budgie/
 ```sh
 git clone --recursive https://github.com/mudler/parakeet.cpp.git ParakeetCpp
 cd ParakeetCpp
+git checkout 9a28a3c   # pinned: needed for the redux-packed Punctuated model
+git submodule update --recursive
 cmake -B build-shared \
   -DCMAKE_BUILD_TYPE=Release \
   -DPARAKEET_SHARED=ON \
   -DPARAKEET_BUILD_CLI=ON \
-  -DPARAKEET_GGML_METAL=OFF
+  -DPARAKEET_GGML_METAL=OFF \
+  -DGGML_NATIVE=OFF \
+  -DGGML_CPU_ARM_ARCH=armv8.4-a+dotprod+fp16
 cmake --build build-shared -j$(sysctl -n hw.ncpu)
 cd ..
 ```
@@ -55,6 +60,10 @@ Sparkle is resolved through Swift Package Manager and embedded as
 `Contents/Frameworks/Sparkle.framework`.
 Metal is intentionally off for now: the current parakeet.cpp/ggml Metal backend
 transcribes correctly, but can assert during process teardown on this machine.
+`GGML_NATIVE=OFF` with the M1 baseline architecture keeps the library runnable
+on every Apple-silicon Mac: ggml's default `-mcpu=native` on an M4 emits i8mm
+and SME instructions that crash M1-M3 Macs. Measured on an M4, the portable
+build is no slower for either model. `build.sh` refuses a native build.
 
 ### 3. Download the Live model
 
@@ -200,7 +209,7 @@ Hotkey, Permissions and About.
 `Sources/Budgie/Config.swift` resolves the parakeet.cpp library from
 `Contents/Frameworks/Parakeet/libparakeet.dylib` and the bundled Live model from
 `Contents/Resources/realtime_eou_120m-v1-q8_0.gguf`. Punctuated mode uses
-`tdt-0.6b-v3-q4_k.gguf`, downloading it from Hugging Face into
+`redux-packed.gguf` from `mudler/parakeet-cpp-gguf`, downloading it into
 `~/Library/Application Support/Budgie/Models/` on first use. When run outside a
 bundle -- e.g. via `swift run` during development -- it can also use matching
 files in the repo's `models/` directory.

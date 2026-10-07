@@ -21,6 +21,22 @@ final class StandardTranscriber: @unchecked Sendable {
         FileManager.default.fileExists(atPath: Config.standardModelPath)
     }
 
+    /// Delete Punctuated models left in the cache by earlier Budgie versions.
+    static func removeLegacyModels() {
+        DispatchQueue.global(qos: .utility).async {
+            for name in Config.legacyModelFileNames {
+                let url = Config.modelCacheDirectoryURL.appendingPathComponent(name)
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    NSLog("Budgie: removed legacy model \(name)")
+                } catch {
+                    NSLog("Budgie: could not remove legacy model \(name): \(error)")
+                }
+            }
+        }
+    }
+
     /// Proactively load the model so the first dictation finds it warm.
     func warmUp() {
         queue.async {
