@@ -110,12 +110,15 @@ private struct RecordButton: View {
 
     var body: some View {
         Button(action: action) {
+            // "Meeting" in the label: a bare "Record" reads as the way to
+            // dictate, which is the hold-to-talk key, not this button.
             HStack(spacing: 5) {
-                Circle().fill(.white).frame(width: 7, height: 7)
-                Text("Record")
+                Image(systemName: "person.2.fill")
+                    .font(.system(size: 10))
+                Text("Record Meeting")
                     .font(.system(size: 12, weight: .semibold))
             }
-            .padding(.leading, 9)
+            .padding(.leading, 10)
             .padding(.trailing, 11)
             .padding(.vertical, 4)
         }
