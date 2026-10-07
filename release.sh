@@ -70,10 +70,14 @@ if grep -q 'TeamIdentifier=not set' <<<"${SIG}"; then
   echo "Rebuild with a Developer ID identity (see above)." >&2
   exit 1
 fi
-if ! xcrun notarytool history --keychain-profile "${NOTARY_PROFILE}" >/dev/null 2>&1; then
-  echo "No notarytool credential profile '${NOTARY_PROFILE}' found. Create one:" >&2
+if ! NOTARY_CHECK="$(xcrun notarytool history --keychain-profile "${NOTARY_PROFILE}" 2>&1)"; then
+  echo "notarytool can't use credential profile '${NOTARY_PROFILE}':" >&2
+  echo "  ${NOTARY_CHECK}" | head -3 >&2
+  echo "If the profile is missing, create one:" >&2
   echo "  xcrun notarytool store-credentials ${NOTARY_PROFILE} \\" >&2
   echo "    --apple-id you@example.com --team-id D5TLPTV9F4" >&2
+  echo "A 403 'agreement' error means a new Apple Developer agreement must be" >&2
+  echo "accepted at https://developer.apple.com/account first." >&2
   exit 1
 fi
 
