@@ -27,15 +27,28 @@ final class PopoverSnapshotTests: XCTestCase {
         ]
         let recent = [
             Transcription(text: "Can you send me the deck before the call tomorrow?", date: now.addingTimeInterval(-120)),
-            Transcription(text: "Let's push the release candidate to the twenty first.", date: now.addingTimeInterval(-900))
+            Transcription(text: "Let's push the release candidate to the twenty first.", date: now.addingTimeInterval(-900)),
+            Transcription(text: "Sounds good, I'll take a look tonight.", date: now.addingTimeInterval(-86_400 - 600))
         ]
+        let history: [MeetingLevels] = (0..<AppState.meetingLevelHistoryLength).map { (i: Int) -> MeetingLevels in
+            let me: Float = i < 20 ? Float(abs(sin(Double(i) * 0.7))) * 0.8 : 0.02
+            let them: Float = i >= 22 ? Float(abs(sin(Double(i) * 0.9))) * 0.9 : 0
+            return MeetingLevels(me: me, them: them)
+        }
 
         let states: [(String, (AppState) -> Void)] = [
             ("idle", { _ in }),
             ("recording", { s in
                 s.meeting = .recording(started: now.addingTimeInterval(-754))
-                s.meetingMicLevel = 0.55
-                s.meetingSystemLevel = 0.8
+                s.meetingLevelHistory = history
+                s.meetingProgress = MeetingLiveProgress(through: 720, lastLine: TranscriptLine(
+                    speaker: .them, start: 700, end: 712,
+                    text: "Okay, so if we move the launch to the twenty first, does that give design enough time to finish the onboarding pass?"
+                ))
+            }),
+            ("recording-first-minute", { s in
+                s.meeting = .recording(started: now.addingTimeInterval(-21))
+                s.meetingLevelHistory = Array(history.prefix(12))
             }),
             ("processing", { s in s.meeting = .processing(.transcribingThem) }),
             ("failed", { s in
@@ -44,12 +57,19 @@ final class PopoverSnapshotTests: XCTestCase {
             }),
             ("dictating-during-meeting", { s in
                 s.meeting = .recording(started: now.addingTimeInterval(-61))
-                s.meetingMicLevel = 0.7
+                s.meetingLevelHistory = history
+                s.meetingProgress = MeetingLiveProgress(through: 60, lastLine: nil)
                 s.dictation = .recording
                 s.recordingStarted = now.addingTimeInterval(-4)
                 s.level = 0.6
             }),
-            ("empty", { s in s.meetings = []; s.recent = [] })
+            ("empty", { s in s.meetings = []; s.recent = [] }),
+            ("long-history", { s in
+                s.recent = (0..<20).map { i in
+                    Transcription(text: "Dictation number \(i) about the plan for the week.",
+                                  date: now.addingTimeInterval(Double(-i) * 7_000))
+                }
+            })
         ]
 
         for (name, configure) in states {
@@ -85,8 +105,14 @@ final class PopoverSnapshotTests: XCTestCase {
                    to: URL(fileURLWithPath: output).appendingPathComponent("settings-meetings.png"))
     }
 
+    /// The popover is as tall as its content, so render at its fitting size.
     private func render(_ view: PopoverView, appearance: NSAppearance.Name, to url: URL) throws {
-        try render(view, size: PopoverView.size, appearance: appearance, to: url)
+        let probe = NSHostingView(rootView: view)
+        probe.appearance = NSAppearance(named: appearance)
+        // Two passes: the timeline measures its rows, then sizes itself.
+        _ = probe.fittingSize
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        try render(view, size: probe.fittingSize, appearance: appearance, to: url)
     }
 
     private func render<V: View>(_ view: V, size: NSSize, appearance: NSAppearance.Name, to url: URL) throws {

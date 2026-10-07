@@ -11,11 +11,15 @@ struct MeetingActions {
     var openFolder: () -> Void
 }
 
-/// The menu bar dropdown — a SwiftUI popover, not a plain `NSMenu`. Top to
-/// bottom: the meeting recorder (the one big action), push-to-talk dictation
-/// (always on, so just a status strip), then history.
+/// The menu bar dropdown — a SwiftUI popover, not a plain `NSMenu`. A header
+/// with the Record button, the live meeting while one records, one timeline of
+/// meetings and dictations, and a footer for push-to-talk and the app menu.
+/// It is as tall as its content; the timeline scrolls past `maxTimelineHeight`.
 struct PopoverView: View {
-    static let size = NSSize(width: 340, height: 540)
+    static let width: CGFloat = 340
+    static let maxTimelineHeight: CGFloat = 380
+    /// While recording, the live meeting takes the room.
+    static let maxTimelineHeightWhileRecording: CGFloat = 170
 
     @ObservedObject var state: AppState
     @ObservedObject var prefs: UserPrefs
@@ -24,303 +28,388 @@ struct PopoverView: View {
     var onCheckForUpdates: () -> Void
     var onQuit: () -> Void
 
-    @AppStorage("popoverHistoryTab") private var historyTab: HistoryTab = .meetings
-
     var body: some View {
         VStack(spacing: 0) {
             header
+            MeetingStatus(state: state, actions: meetingActions)
             Divider()
-            MeetingCard(state: state, actions: meetingActions)
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-            DictationStrip(state: state, prefs: prefs, onOpenSettings: onOpenSettings)
-                .padding(12)
-            Divider()
-            history
+            Timeline(
+                state: state,
+                prefs: prefs,
+                actions: meetingActions,
+                maxHeight: state.meeting.isRecording
+                    ? Self.maxTimelineHeightWhileRecording : Self.maxTimelineHeight
+            )
             Divider()
             footer
         }
-        .frame(width: Self.size.width, height: Self.size.height)
+        .frame(width: Self.width)
+        .fixedSize(horizontal: false, vertical: true)
+        // Opaque, so the window behind the popover doesn't show through.
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             Image(nsImage: MenuBarIcon.budgie(size: NSSize(width: 16, height: 16)))
                 .renderingMode(.template)
                 .foregroundStyle(.tint)
             Text("Budgie")
                 .font(.system(size: 13, weight: .semibold))
             Spacer()
-            StatePill(dictation: state.dictation, meeting: state.meeting)
+            switch state.meeting {
+            case .recording:
+                RecordingBadge()
+            case .processing:
+                EmptyView()
+            case .idle, .failed:
+                RecordButton(action: meetingActions.start)
+            }
         }
+        .frame(height: 24)
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-
-    // MARK: - History
-
-    private var history: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Picker("", selection: $historyTab) {
-                    ForEach(HistoryTab.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                Spacer()
-                Button(action: meetingActions.openFolder) {
-                    Image(systemName: "folder")
-                }
-                .buttonStyle(.borderless)
-                .help("Open the meetings folder")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    switch historyTab {
-                    case .meetings:
-                        if state.meetings.isEmpty {
-                            EmptyHistory(text: "Meetings you record show up here, saved as Markdown in \(prefs.meetingsFolder.abbreviatedPath).")
-                        }
-                        ForEach(state.meetings) { meeting in
-                            MeetingRow(
-                                meeting: meeting,
-                                isBusy: state.meeting.isBusy,
-                                actions: meetingActions
-                            )
-                        }
-                    case .dictations:
-                        if state.recent.isEmpty {
-                            EmptyHistory(text: "Your dictations show up here. Click one to copy it.")
-                        }
-                        ForEach(state.recent.prefix(20)) { RecentRow(item: $0) }
-                    }
-                }
-                .padding(.bottom, 6)
-            }
-            .frame(maxHeight: .infinity)
-        }
+        .padding(.vertical, 9)
     }
 
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(spacing: 0) {
-            FooterButton(title: "Settings", systemImage: "gearshape", action: onOpenSettings)
-            FooterButton(title: "Updates", systemImage: "arrow.triangle.2.circlepath",
-                         action: onCheckForUpdates)
-            FooterButton(title: "Quit", systemImage: "power", action: onQuit)
+        HStack(spacing: 6) {
+            DictationStatus(state: state, prefs: prefs, onOpenSettings: onOpenSettings)
+            Spacer(minLength: 6)
+            Menu {
+                Button("Open Meetings Folder", action: meetingActions.openFolder)
+                Divider()
+                Button("Settings…", action: onOpenSettings)
+                Button("Check for Updates…", action: onCheckForUpdates)
+                Divider()
+                Button("Quit Budgie", action: onQuit)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Settings, updates and quit")
         }
-        .padding(4)
+        .font(.system(size: 11.5))
+        .frame(minHeight: 22)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
     }
 }
 
-enum HistoryTab: String, CaseIterable, Identifiable {
-    case meetings, dictations
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .meetings:   return "Meetings"
-        case .dictations: return "Dictations"
+// MARK: - Header controls
+
+/// The red "Record" capsule that starts a meeting.
+private struct RecordButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Circle().fill(.white).frame(width: 7, height: 7)
+                Text("Record")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .padding(.leading, 9)
+            .padding(.trailing, 11)
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(FilledButtonStyle(color: .red, shape: .capsule))
+        .disabled(!MeetingRecorder.isSupported)
+        .help(MeetingRecorder.isSupported
+              ? "Record a meeting: your mic and the call, transcribed on this Mac"
+              : "Recording meetings needs macOS 14.2 or later")
+    }
+}
+
+private struct RecordingBadge: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(.red).frame(width: 7, height: 7)
+                .symbolEffectPulse()
+            Text("REC")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.red)
         }
     }
 }
 
-// MARK: - Meeting card
+private extension View {
+    /// A slow pulse, for the recording dot.
+    func symbolEffectPulse() -> some View {
+        PhaseAnimator([1.0, 0.35]) { opacity in
+            self.opacity(opacity)
+        } animation: { _ in .easeInOut(duration: 0.9) }
+    }
+}
 
-/// The meeting recorder: a start button, a live card while recording, a
-/// progress line while transcribing.
-private struct MeetingCard: View {
+// MARK: - Meeting status
+
+/// The live meeting while recording, a progress line while the transcript is
+/// saved, or the last failure. Nothing when idle.
+private struct MeetingStatus: View {
     @ObservedObject var state: AppState
     let actions: MeetingActions
 
     var body: some View {
-        Group {
-            switch state.meeting {
-            case .idle:
-                startButton
-            case .failed(let message, let folder):
-                VStack(spacing: 10) {
-                    failure(message, folder: folder)
-                    startButton
-                }
-            case .recording(let started):
-                recording(since: started)
-            case .processing(let stage):
-                processing(stage)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var startButton: some View {
-        VStack(spacing: 7) {
-            Button(action: actions.start) {
-                Label("Record Meeting", systemImage: "record.circle")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
-            }
-            .buttonStyle(FilledButtonStyle(color: .red))
-            .disabled(!MeetingRecorder.isSupported)
-
-            Text(MeetingRecorder.isSupported
-                 ? "Your mic and the call, transcribed on this Mac."
-                 : "Recording meetings needs macOS 14.2 or later.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-    }
-
-    private func recording(since started: Date) -> some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "record.circle.fill")
-                    .foregroundStyle(.red)
-                    .symbolEffect(.pulse, options: .repeating)
-                Text("Recording")
-                    .font(.system(size: 13, weight: .semibold))
-                TimelineView(.periodic(from: started, by: 1)) { _ in
-                    Text(MeetingTranscript.timestamp(Date().timeIntervalSince(started)))
-                        .font(.system(size: 13, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(action: actions.stop) {
-                    Label("Stop", systemImage: "stop.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                }
-                .buttonStyle(FilledButtonStyle(color: .red))
-            }
-            ChannelMeter(label: "Me", level: state.meetingMicLevel)
-            ChannelMeter(label: "Them", level: state.meetingSystemLevel)
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.red.opacity(0.25)))
-    }
-
-    private func processing(_ stage: MeetingStage) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+        switch state.meeting {
+        case .idle:
+            EmptyView()
+        case .recording(let started):
+            LiveMeeting(state: state, started: started, stop: actions.stop)
+        case .processing(let stage):
+            Banner(tint: .blue) {
                 ProgressView().controlSize(.small)
                 Text(stage.label)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                 Spacer()
             }
-            Text("Dictation keeps working in the meantime.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
-    }
-
-    private func failure(_ message: String, folder: URL?) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            Text(message)
-                .font(.system(size: 12))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            if let folder {
-                Button("Try Again") { actions.transcribe(folder) }
-                    .controlSize(.small)
+        case .failed(let message, let folder):
+            Banner(tint: .orange) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if let folder {
+                    Button("Try Again") { actions.transcribe(folder) }
+                        .controlSize(.small)
+                }
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
     }
 }
 
-/// A labelled level meter for one meeting channel.
-private struct ChannelMeter: View {
+private struct Banner<Content: View>: View {
+    let tint: Color
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(spacing: 8) { content }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(tint.opacity(0.10)))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+    }
+}
+
+/// The meeting being recorded: a big timer, rolling Me/Them waveforms, the
+/// latest transcribed line, and Stop.
+private struct LiveMeeting: View {
+    @ObservedObject var state: AppState
+    let started: Date
+    let stop: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            TimelineView(.periodic(from: started, by: 1)) { _ in
+                Text(MeetingTranscript.timestamp(Date().timeIntervalSince(started)))
+                    .font(.system(size: 34, weight: .light).monospacedDigit())
+            }
+            VStack(spacing: 4) {
+                Waveform(label: "Me", values: state.meetingLevelHistory.map(\.me), color: .red)
+                Waveform(label: "Them", values: state.meetingLevelHistory.map(\.them), color: .blue)
+            }
+            LiveTranscriptCard(progress: state.meetingProgress)
+            Button(action: stop) {
+                Label("Stop & Save Transcript", systemImage: "stop.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+            }
+            .buttonStyle(FilledButtonStyle(color: .red))
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 2)
+        .padding(.bottom, 14)
+    }
+}
+
+/// A rolling level history drawn as bars, newest on the right.
+private struct Waveform: View {
     let label: String
-    let level: Float
+    let values: [Float]
+    let color: Color
 
     var body: some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .leading)
-            LevelMeter(level: level, height: 8)
-        }
-    }
-}
-
-// MARK: - Dictation strip
-
-/// Push-to-talk is always armed, so dictation gets a status line, not a card.
-private struct DictationStrip: View {
-    @ObservedObject var state: AppState
-    @ObservedObject var prefs: UserPrefs
-    var onOpenSettings: () -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            content
-        }
-        .font(.system(size: 12))
-        .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch state.dictation {
-        case .idle:
-            Image(systemName: "mic")
-                .foregroundStyle(.secondary)
-            Text("Hold").foregroundStyle(.secondary)
-            Keycap(text: prefs.hotKey.keycap)
-            Text("to dictate").foregroundStyle(.secondary)
-            Spacer(minLength: 4)
-            if state.speedMultiplier >= 1.05 {
-                Text(String(format: "%.1f× typing", state.speedMultiplier))
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.tint)
-                    .help("\(AppState.durationText(state.timeSavedToday)) of typing saved today · \(state.wordsToday) words")
-            }
-        case .recording:
-            Image(systemName: "mic.fill").foregroundStyle(.red)
-            Text("Listening").fontWeight(.medium)
-            if let started = state.recordingStarted {
-                TimelineView(.periodic(from: started, by: 1)) { _ in
-                    Text(MeetingTranscript.timestamp(Date().timeIntervalSince(started)))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 2) {
+                let padded = Array(repeating: Float(0), count: max(0, AppState.meetingLevelHistoryLength - values.count)) + values
+                ForEach(Array(padded.enumerated()), id: \.offset) { _, level in
+                    Capsule()
+                        .fill(color.opacity(level > 0.02 ? 0.85 : 0.3))
+                        .frame(width: 3, height: 3 + CGFloat(min(max(level, 0), 1)) * 19)
                 }
             }
-            LevelMeter(level: state.level, height: 8)
-        case .transcribing:
-            ProgressView().controlSize(.mini)
-            Text("Transcribing…").fontWeight(.medium)
-            Spacer()
-        case .error(let message):
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(message)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            Button("Fix…", action: onOpenSettings)
-                .controlSize(.small)
+            .frame(maxWidth: .infinity, minHeight: 22, alignment: .trailing)
         }
     }
 }
 
-// MARK: - History rows
+private struct LiveTranscriptCard: View {
+    let progress: MeetingLiveProgress?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            text
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.05)))
+    }
+
+    private var title: String {
+        guard let progress, progress.through >= 1 else { return "Transcribing as you go" }
+        return "Transcribed through \(MeetingTranscript.timestamp(progress.through))"
+    }
+
+    private var text: Text {
+        if let line = progress?.lastLine {
+            return Text("\(line.speaker.rawValue): ").bold().foregroundColor(.primary)
+                + Text(Self.tail(of: line.text))
+        }
+        if progress == nil { return Text("The latest line shows up here every minute or so.") }
+        return Text("No speech yet.")
+    }
+
+    /// The end of a long line, cut at a word.
+    static func tail(of text: String, limit: Int = 140) -> String {
+        guard text.count > limit else { return text }
+        let suffix = text.suffix(limit)
+        let start = suffix.firstIndex(of: " ").map { suffix.index(after: $0) } ?? suffix.startIndex
+        return "…" + suffix[start...]
+    }
+}
+
+// MARK: - Timeline
+
+/// Meetings and dictations in one list, newest first, grouped by day.
+private struct Timeline: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var prefs: UserPrefs
+    let actions: MeetingActions
+    let maxHeight: CGFloat
+
+    static let itemLimit = 40
+
+    var body: some View {
+        if groups.isEmpty {
+            Text("Your meetings and dictations show up here.\nTranscripts are saved to \(prefs.meetingsFolder.abbreviatedPath).")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 22)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(groups, id: \.title) { group in
+                        Text(group.title)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .textCase(.uppercase)
+                            .padding(.horizontal, 14)
+                            .padding(.top, 9)
+                            .padding(.bottom, 2)
+                        ForEach(group.items) { item in
+                            switch item {
+                            case .meeting(let meeting):
+                                MeetingRow(meeting: meeting, isBusy: state.meeting.isBusy, actions: actions)
+                            case .dictation(let dictation):
+                                DictationRow(item: dictation)
+                            }
+                        }
+                    }
+                }
+                .padding(.bottom, 6)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: maxHeight)
+        }
+    }
+
+    private var groups: [TimelineGroup] {
+        let meetings = state.meetings
+            .filter { $0.folder != state.activeMeetingFolder }
+            .map(TimelineItem.meeting)
+        let items = (meetings + state.recent.map(TimelineItem.dictation))
+            .sorted { $0.date > $1.date }
+            .prefix(Self.itemLimit)
+        var groups: [TimelineGroup] = []
+        for item in items {
+            let title = Self.dayTitle(item.date)
+            if groups.last?.title == title {
+                groups[groups.count - 1].items.append(item)
+            } else {
+                groups.append(TimelineGroup(title: title, items: [item]))
+            }
+        }
+        return groups
+    }
+
+    static func dayTitle(_ date: Date, now: Date = Date()) -> String {
+        let calendar = Calendar.current
+        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) { return "Yesterday" }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date),
+                                           to: calendar.startOfDay(for: now)).day ?? 0
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate(days < 7 ? "EEEE" : "MMMd")
+        return formatter.string(from: date)
+    }
+}
+
+private struct TimelineGroup {
+    let title: String
+    var items: [TimelineItem]
+}
+
+private enum TimelineItem: Identifiable {
+    case meeting(MeetingSummary)
+    case dictation(Transcription)
+
+    var id: String {
+        switch self {
+        case .meeting(let meeting): return "m:" + meeting.folder.path
+        case .dictation(let item):  return "d:" + item.id.uuidString
+        }
+    }
+
+    var date: Date {
+        switch self {
+        case .meeting(let meeting): return meeting.started
+        case .dictation(let item):  return item.date
+        }
+    }
+}
+
+private let timeFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .none
+    formatter.timeStyle = .short
+    return formatter
+}()
 
 private struct MeetingRow: View {
     let meeting: MeetingSummary
@@ -333,36 +422,43 @@ private struct MeetingRow: View {
         Button {
             if meeting.hasTranscript { actions.open(meeting) } else { actions.reveal(meeting) }
         } label: {
-            HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: meeting.hasTranscript ? "doc.text" : "waveform")
-                    .font(.system(size: 14))
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                    .frame(width: 18)
+                    .frame(width: 16)
+                    .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(Self.dateFormatter.string(from: meeting.started))
-                            .font(.system(size: 12, weight: .medium))
-                        if let duration = meeting.duration {
-                            Text("· \(AppState.durationText(duration))")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                        }
+                    HStack(spacing: 5) {
+                        Text("Meeting")
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Text(subtitle)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.tertiary)
+                        Spacer(minLength: 4)
+                        trailing
                     }
+                    .frame(height: 20)
                     Text(meeting.preview ?? "Not transcribed yet")
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                         .foregroundStyle(meeting.hasTranscript ? .secondary : .tertiary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                trailing
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
         }
         .buttonStyle(HoverRowStyle())
         .onHover { hovering = $0 }
         .help(meeting.hasTranscript ? "Open the transcript" : "Show the recording in Finder")
+    }
+
+    private var subtitle: String {
+        let time = timeFormatter.string(from: meeting.started)
+        guard let duration = meeting.duration else { return time }
+        return "\(time) · \(AppState.durationText(duration))"
     }
 
     @ViewBuilder
@@ -377,29 +473,28 @@ private struct MeetingRow: View {
                 .foregroundStyle(.green)
         } else if hovering {
             HStack(spacing: 2) {
-                RowIconButton(systemImage: "doc.on.doc", help: "Copy the transcript") {
+                Button {
                     actions.copy(meeting)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                } label: {
+                    Text("Copy for Claude")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
                 }
+                .buttonStyle(FilledButtonStyle(color: .accentColor, shape: .capsule))
+                .help("Copy the whole transcript as Markdown")
                 RowIconButton(systemImage: "folder", help: "Show in Finder") {
                     actions.reveal(meeting)
                 }
             }
         }
     }
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        formatter.doesRelativeDateFormatting = true
-        return formatter
-    }()
 }
 
-/// One recent transcription — click to copy it back to the clipboard.
-private struct RecentRow: View {
+/// One dictation — click to copy it back to the clipboard.
+private struct DictationRow: View {
     let item: Transcription
     @State private var copied = false
 
@@ -410,24 +505,28 @@ private struct RecentRow: View {
             copied = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
         } label: {
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 16)
                 Text(item.text)
                     .font(.system(size: 12))
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if copied {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.green)
                 } else {
-                    Text(item.date, format: .relative(presentation: .numeric))
-                        .font(.system(size: 10))
+                    Text(timeFormatter.string(from: item.date))
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .fixedSize()
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .padding(.vertical, 5)
             .contentShape(Rectangle())
         }
         .buttonStyle(HoverRowStyle())
@@ -435,67 +534,56 @@ private struct RecentRow: View {
     }
 }
 
-private struct EmptyHistory: View {
-    let text: String
+// MARK: - Footer
+
+/// Push-to-talk is always armed, so dictation gets a status line.
+private struct DictationStatus: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var prefs: UserPrefs
+    var onOpenSettings: () -> Void
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 11))
-            .foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+        HStack(spacing: 5) {
+            switch state.dictation {
+            case .idle:
+                Text("Hold").foregroundStyle(.secondary)
+                Keycap(text: prefs.hotKey.keycap)
+                Text("to dictate").foregroundStyle(.secondary)
+                if state.speedMultiplier >= 1.05 {
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(String(format: "%.1f× typing", state.speedMultiplier))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.tint)
+                        .help("\(AppState.durationText(state.timeSavedToday)) of typing saved today · \(state.wordsToday) words")
+                }
+            case .recording:
+                Image(systemName: "mic.fill").foregroundStyle(.red)
+                Text("Listening").fontWeight(.medium)
+                if let started = state.recordingStarted {
+                    TimelineView(.periodic(from: started, by: 1)) { _ in
+                        Text(MeetingTranscript.timestamp(Date().timeIntervalSince(started)))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                LevelMeter(level: state.level, height: 7)
+                    .frame(width: 90)
+            case .transcribing:
+                ProgressView().controlSize(.mini)
+                Text("Transcribing…").fontWeight(.medium)
+            case .error(let message):
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(message)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Fix…", action: onOpenSettings)
+                    .controlSize(.small)
+            }
+        }
     }
 }
 
 // MARK: - Components
-
-/// A coloured pill summarising the current state in one word. Dictation wins
-/// while it's active; otherwise the meeting recorder's state shows.
-private struct StatePill: View {
-    let dictation: DictationState
-    let meeting: MeetingState
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.15)))
-    }
-
-    private var text: String {
-        switch dictation {
-        case .recording:    return "LISTENING"
-        case .transcribing: return "WORKING"
-        case .error:        return "ATTENTION"
-        case .idle:
-            switch meeting {
-            case .recording:  return "RECORDING"
-            case .processing: return "WORKING"
-            case .failed:     return "ATTENTION"
-            case .idle:       return "READY"
-            }
-        }
-    }
-
-    private var color: Color {
-        switch dictation {
-        case .recording:    return .red
-        case .transcribing: return .blue
-        case .error:        return .orange
-        case .idle:
-            switch meeting {
-            case .recording:  return .red
-            case .processing: return .blue
-            case .failed:     return .orange
-            case .idle:       return .green
-            }
-        }
-    }
-}
 
 /// A keyboard-key styled label.
 private struct Keycap: View {
@@ -503,13 +591,13 @@ private struct Keycap: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 12, weight: .semibold, design: .rounded))
-            .frame(minWidth: 20)
-            .padding(.horizontal, 5)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .frame(minWidth: 18)
+            .padding(.horizontal, 4)
             .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.16)))
-            .overlay(RoundedRectangle(cornerRadius: 5)
-                .strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.14)))
+            .overlay(RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1))
     }
 }
 
@@ -517,7 +605,7 @@ private struct Keycap: View {
 private struct LevelMeter: View {
     let level: Float
     var height: CGFloat = 16
-    private let bars = 24
+    private let bars = 18
 
     var body: some View {
         HStack(spacing: 2) {
@@ -545,7 +633,7 @@ private struct RowIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 12))
-                .frame(width: 24, height: 22)
+                .frame(width: 24, height: 20)
                 .contentShape(Rectangle())
         }
         .buttonStyle(HoverRowStyle())
@@ -553,41 +641,31 @@ private struct RowIconButton: View {
     }
 }
 
-/// A footer action with an icon, filling the available width.
-private struct FooterButton: View {
-    let title: String
-    let systemImage: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                Text(title)
-            }
-            .font(.system(size: 12))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(HoverRowStyle())
-    }
-}
-
 /// A solid button that keeps its colour whether or not the popover is the key
 /// window (`.borderedProminent` greys out in an inactive window).
 private struct FilledButtonStyle: ButtonStyle {
+    enum Shape { case rounded, capsule }
+
     let color: Color
+    var shape: Shape = .rounded
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(.white)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isEnabled ? color : Color.secondary.opacity(0.5))
+            .background(background
+                .foregroundStyle(isEnabled ? color : Color.secondary.opacity(0.5))
                 .brightness(configuration.isPressed ? -0.12 : (hovering ? 0.05 : 0)))
             .onHover { hovering = $0 }
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        switch shape {
+        case .rounded: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        case .capsule: Capsule()
+        }
     }
 }
 

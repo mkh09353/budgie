@@ -93,6 +93,14 @@ final class AudioChunker {
     }
 }
 
+/// How far live transcription has got, for the popover while recording.
+struct MeetingLiveProgress: Equatable {
+    /// Everything before this point in the meeting has been transcribed.
+    var through: TimeInterval
+    /// The latest line said, echo removed.
+    var lastLine: TranscriptLine?
+}
+
 /// Transcribes a meeting while it records, a chunk at a time, so stopping only
 /// waits for the last chunk of each stream. Chunks run one at a time on a
 /// background queue in the order they were cut.
@@ -100,11 +108,15 @@ final class MeetingLiveTranscriber {
     private let engine: StandardTranscriber
     private let queue = DispatchQueue(label: "com.maxheadley.budgie.meeting-chunks", qos: .utility)
     private var words: [Speaker: [TranscriptWord]] = [.me: [], .them: []]
+    /// Where each stream's chunks have been transcribed up to.
+    private var done: [Speaker: TimeInterval] = [.me: 0, .them: 0]
     private var failure: Error?
     private let temporaryDirectory: URL
 
     /// Called on the transcription queue as each chunk starts.
     var onChunkStart: ((Speaker) -> Void)?
+    /// Called on the transcription queue after each chunk.
+    var onProgress: ((MeetingLiveProgress) -> Void)?
 
     init(engine: StandardTranscriber) {
         self.engine = engine
@@ -134,7 +146,12 @@ final class MeetingLiveTranscriber {
 
     private func transcribe(_ chunk: AudioChunk) {
         // After one failure the meeting is re-transcribed from its files.
-        guard failure == nil, chunk.duration >= 0.3, !chunk.isSilent else { return }
+        guard failure == nil else { return }
+        defer {
+            done[chunk.speaker] = chunk.offset + chunk.duration
+            reportProgress()
+        }
+        guard chunk.duration >= 0.3, !chunk.isSilent else { return }
         onChunkStart?(chunk.speaker)
         do {
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
@@ -149,6 +166,19 @@ final class MeetingLiveTranscriber {
             NSLog("Budgie: meeting chunk at \(chunk.offset)s failed: \(error)")
             failure = error
         }
+    }
+
+    private func reportProgress() {
+        guard let onProgress, failure == nil else { return }
+        let through = min(done[.me] ?? 0, done[.them] ?? 0)
+        let lines = MeetingTranscript.merge(
+            me: words[.me] ?? [], them: words[.them] ?? [],
+            started: Date(), duration: through, heardSystemAudio: true
+        ).lines
+        // Prefer a line both streams have caught up with, so "Them" can't
+        // appear to answer something "Me" hasn't been transcribed saying yet.
+        let lastLine = lines.last { $0.start < through } ?? lines.last
+        onProgress(MeetingLiveProgress(through: through, lastLine: lastLine))
     }
 
     private func write(_ chunk: AudioChunk, to url: URL) throws {

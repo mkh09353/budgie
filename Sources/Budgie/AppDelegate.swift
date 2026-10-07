@@ -55,8 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         recorder.onLevel = { [weak self] level in self?.state.level = level }
         meetingRecorder.onLevels = { [weak self] me, them in
-            self?.state.meetingMicLevel = me
-            self?.state.meetingSystemLevel = them
+            self?.state.recordMeetingLevels(me: me, them: them)
         }
         reloadMeetings()
 
@@ -202,11 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onQuit: { NSApp.terminate(nil) }
         )
         let host = NSHostingController(rootView: root)
-        // Pin the size so the popover opens flush under the menu bar instead of
-        // being repositioned while SwiftUI settles its fitting size.
-        host.view.frame = NSRect(origin: .zero, size: PopoverView.size)
+        // The popover follows the view's height: short with little history,
+        // taller while a meeting records.
+        host.sizingOptions = .preferredContentSize
         popover.contentViewController = host
-        popover.contentSize = PopoverView.size
     }
 
     @objc private func togglePopover() {
@@ -299,6 +297,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self.state.meeting = .processing(speaker == .me ? .transcribingMe : .transcribingThem)
                 }
             }
+            transcriber.onProgress = { [weak self] progress in
+                DispatchQueue.main.async {
+                    guard let self, self.state.meeting.isRecording else { return }
+                    self.state.meetingProgress = progress
+                }
+            }
+            state.meetingProgress = nil
+            state.meetingLevelHistory = []
             do {
                 try meetingRecorder.start(in: folder, transcriber: transcriber)
             } catch {
@@ -307,6 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             meetingFolder = folder
             meetingTranscriber = transcriber
+            state.activeMeetingFolder = folder
             state.meeting = .recording(started: started)
             meetingClock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 self?.updateIcon()
@@ -395,6 +402,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     NSLog("Budgie: meeting transcription failed: \(error)")
                     self.state.meeting = .failed(self.meetingErrorMessage(error), folder: folder)
                 }
+                self.state.activeMeetingFolder = nil
+                self.state.meetingProgress = nil
                 if case .transcribing = self.state.dictation {} else { self.stopTranscribeAnimation() }
                 self.reloadMeetings()
             }

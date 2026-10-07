@@ -47,6 +47,11 @@ enum MeetingState: Equatable {
     }
 }
 
+struct MeetingLevels: Equatable {
+    let me: Float
+    let them: Float
+}
+
 /// One finished dictation, kept for the popover's "Recent" list.
 struct Transcription: Identifiable, Codable {
     var id = UUID()
@@ -69,7 +74,23 @@ final class AppState: ObservableObject {
     /// Live meeting levels, 0...1: the mic ("Me") and system audio ("Them").
     @Published var meetingMicLevel: Float = 0
     @Published var meetingSystemLevel: Float = 0
+    /// The last few seconds of levels, oldest first, for the live waveforms.
+    @Published var meetingLevelHistory: [MeetingLevels] = []
+    /// Live transcription progress for the meeting being recorded.
+    @Published var meetingProgress: MeetingLiveProgress?
+    /// The folder being recorded or saved, hidden from the timeline until done.
+    @Published var activeMeetingFolder: URL?
     @Published var meetings: [MeetingSummary] = []
+
+    static let meetingLevelHistoryLength = 44
+
+    func recordMeetingLevels(me: Float, them: Float) {
+        meetingMicLevel = me
+        meetingSystemLevel = them
+        meetingLevelHistory.append(MeetingLevels(me: me, them: them))
+        let overflow = meetingLevelHistory.count - Self.meetingLevelHistoryLength
+        if overflow > 0 { meetingLevelHistory.removeFirst(overflow) }
+    }
 
     @Published var recent: [Transcription] = []
     @Published var wordsToday = 0
