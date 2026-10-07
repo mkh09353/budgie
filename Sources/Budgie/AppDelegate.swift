@@ -8,11 +8,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let popover = NSPopover()
     private var prefsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
-    private let updaterController = SPUStandardUpdaterController(
+    private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
-        updaterDelegate: nil,
-        userDriverDelegate: nil
+        updaterDelegate: self,
+        userDriverDelegate: self
     )
+    /// Installs a downloaded update and relaunches; set once Sparkle has one.
+    private var installUpdate: (() -> Void)?
 
     private let state = AppState()
     private let prefs = UserPrefs.shared
@@ -39,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var transcribeTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = updaterController
         buildStatusItem()
         buildPopover()
 
@@ -83,9 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Redraw the menu bar icon whenever the state or live level changes.
         state.$dictation
-            .combineLatest(state.$level, state.$meeting)
+            .combineLatest(state.$level, state.$meeting, state.$update)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _, _, _ in self?.updateIcon() }
+            .sink { [weak self] _, _, _, _ in self?.updateIcon() }
             .store(in: &cancellables)
 
         prefs.$meetingsFolder
@@ -198,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.openPreferences()
             },
             onCheckForUpdates: { [weak self] in self?.checkForUpdates() },
+            onInstallUpdate: { [weak self] in self?.installPendingUpdate() },
             onQuit: { NSApp.terminate(nil) }
         )
         let host = NSHostingController(rootView: root)
@@ -238,7 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 button.contentTintColor = nil
                 button.title = prefs.showLabel ? " Transcribing" : ""
             case .idle, .failed:
-                button.image = MenuBarIcon.idle()
+                button.image = state.update == nil ? MenuBarIcon.idle() : MenuBarIcon.idleWithBadge()
                 button.contentTintColor = nil
                 button.title = prefs.showLabel ? " Budgie" : ""
             }
@@ -426,6 +430,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         popover.performClose(nil)
         NSApp.activate(ignoringOtherApps: true)
         updaterController.checkForUpdates(nil)
+    }
+
+    /// The popover's update banner: restart into a downloaded update, or open
+    /// Sparkle's window when automatic updates are off.
+    private func installPendingUpdate() {
+        guard !state.meeting.isBusy else { return }
+        if case .ready = state.update, let installUpdate {
+            popover.performClose(nil)
+            installUpdate()
+        } else {
+            checkForUpdates()
+        }
     }
 
     private func openPreferences() {
@@ -829,5 +845,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         }
+    }
+}
+
+// MARK: - Updates
+
+extension AppDelegate: SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+    /// Budgie never quits on its own, so an update installed "on quit" would
+    /// wait forever. Hold it and offer Restart to Update in the popover.
+    func updater(
+        _ updater: SPUUpdater,
+        willInstallUpdateOnQuit item: SUAppcastItem,
+        immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
+    ) -> Bool {
+        NSLog("Budgie: update \(item.displayVersionString) downloaded, waiting for restart")
+        installUpdate = immediateInstallHandler
+        state.update = .ready(version: item.displayVersionString)
+        return true
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        if case .available = state.update { state.update = nil }
+    }
+
+    // With automatic updates off, scheduled updates show as the popover banner
+    // instead of a window popping up over whatever the user is doing.
+    var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    func standardUserDriverShouldHandleShowingScheduledUpdate(
+        _ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool
+    ) -> Bool {
+        false
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState
+    ) {
+        guard !handleShowingUpdate else { return }
+        NSLog("Budgie: update \(update.displayVersionString) available")
+        self.state.update = .available(version: update.displayVersionString)
+    }
+
+    func standardUserDriverWillFinishUpdateSession() {
+        if case .available = state.update { state.update = nil }
     }
 }

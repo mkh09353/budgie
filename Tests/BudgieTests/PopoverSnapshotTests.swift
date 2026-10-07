@@ -64,6 +64,12 @@ final class PopoverSnapshotTests: XCTestCase {
                 s.level = 0.6
             }),
             ("empty", { s in s.meetings = []; s.recent = [] }),
+            ("update-ready", { s in s.update = .ready(version: "1.6.2") }),
+            ("update-during-meeting", { s in
+                s.update = .ready(version: "1.6.2")
+                s.meeting = .recording(started: now.addingTimeInterval(-300))
+                s.meetingLevelHistory = history
+            }),
             ("long-history", { s in
                 s.recent = (0..<20).map { i in
                     Transcription(text: "Dictation number \(i) about the plan for the week.",
@@ -86,13 +92,30 @@ final class PopoverSnapshotTests: XCTestCase {
                         start: {}, stop: {}, transcribe: { _ in }, open: { _ in },
                         copy: { _ in }, reveal: { _ in }, openFolder: {}
                     ),
-                    onOpenSettings: {}, onCheckForUpdates: {}, onQuit: {}
+                    onOpenSettings: {}, onCheckForUpdates: {}, onInstallUpdate: {}, onQuit: {}
                 )
                 let suffix = appearance == .aqua ? "light" : "dark"
                 try render(view, appearance: appearance,
                            to: directory.appendingPathComponent("popover-\(name)-\(suffix).png"))
             }
         }
+    }
+
+    func testRenderMenuBarIcons() throws {
+        guard let output = ProcessInfo.processInfo.environment["BUDGIE_RENDER_POPOVER"] else {
+            throw XCTSkip("Set BUDGIE_RENDER_POPOVER to a directory to render the icons")
+        }
+        let icons = HStack(spacing: 24) {
+            ForEach([false, true], id: \.self) { badge in
+                Image(nsImage: badge ? MenuBarIcon.idleWithBadge() : MenuBarIcon.idle())
+                    .renderingMode(.template)
+                    .resizable()
+                    .frame(width: 72, height: 72)
+            }
+        }
+        .padding(16)
+        try render(icons, size: NSSize(width: 216, height: 104), appearance: .aqua,
+                   to: URL(fileURLWithPath: output).appendingPathComponent("menu-bar-icons.png"))
     }
 
     func testRenderMeetingsSettings() throws {

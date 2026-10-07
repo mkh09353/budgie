@@ -26,6 +26,20 @@ enum PunctuatedModelStatus: Equatable {
     }
 }
 
+/// An update Sparkle found. `ready` has been downloaded and is held until the
+/// user restarts from the popover (or quits); `available` means automatic
+/// updates are off, so installing goes through Sparkle's window.
+enum UpdateStatus: Equatable {
+    case available(version: String)
+    case ready(version: String)
+
+    var version: String {
+        switch self {
+        case .available(let version), .ready(let version): return version
+        }
+    }
+}
+
 /// What the meeting recorder is doing — drives the popover's meeting card and
 /// the menu bar timer.
 enum MeetingState: Equatable {
@@ -71,6 +85,7 @@ final class AppState: ObservableObject {
     @Published var punctuatedModelStatus: PunctuatedModelStatus = .unavailable
 
     @Published var meeting: MeetingState = .idle
+    @Published var update: UpdateStatus?
     /// Live meeting levels, 0...1: the mic ("Me") and system audio ("Them").
     @Published var meetingMicLevel: Float = 0
     @Published var meetingSystemLevel: Float = 0

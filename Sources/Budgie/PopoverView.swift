@@ -26,11 +26,16 @@ struct PopoverView: View {
     var meetingActions: MeetingActions
     var onOpenSettings: () -> Void
     var onCheckForUpdates: () -> Void
+    var onInstallUpdate: () -> Void
     var onQuit: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            // Restarting would end a meeting, so the banner waits until it's saved.
+            if let update = state.update, !state.meeting.isBusy {
+                UpdateBanner(update: update, install: onInstallUpdate)
+            }
             MeetingStatus(state: state, actions: meetingActions)
             Divider()
             Timeline(
@@ -148,6 +153,44 @@ private extension View {
         PhaseAnimator([1.0, 0.35]) { opacity in
             self.opacity(opacity)
         } animation: { _ in .easeInOut(duration: 0.9) }
+    }
+}
+
+// MARK: - Update banner
+
+/// Shown while an update waits, so it isn't stuck until Budgie next quits.
+private struct UpdateBanner: View {
+    let update: UpdateStatus
+    let install: () -> Void
+
+    var body: some View {
+        Banner(tint: .accentColor) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 15))
+                .foregroundStyle(.tint)
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+            Spacer(minLength: 4)
+            Button(action: install) {
+                Text(buttonTitle)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+            }
+            .buttonStyle(FilledButtonStyle(color: .accentColor, shape: .capsule))
+        }
+    }
+
+    private var title: String {
+        switch update {
+        case .ready(let version):     return "Budgie \(version) is ready"
+        case .available(let version): return "Budgie \(version) is available"
+        }
+    }
+
+    private var buttonTitle: String {
+        if case .ready = update { return "Restart to Update" }
+        return "Update…"
     }
 }
 

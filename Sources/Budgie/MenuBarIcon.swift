@@ -9,6 +9,24 @@ enum MenuBarIcon {
     /// Idle: the hand-drawn perched budgie at menu-bar size.
     static func idle() -> NSImage { budgie(size: size) }
 
+    /// Idle with a dot at the top right: an update is waiting.
+    static func idleWithBadge() -> NSImage {
+        let bird = budgie(size: size)
+        let img = NSImage(size: size, flipped: false) { rect in
+            bird.draw(in: rect)
+            let dot = NSRect(x: rect.maxX - 6, y: rect.maxY - 6, width: 5.5, height: 5.5)
+            // Clear a ring so the dot stands apart from the bird's head.
+            NSGraphicsContext.current?.compositingOperation = .clear
+            NSBezierPath(ovalIn: dot.insetBy(dx: -1.5, dy: -1.5)).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: dot).fill()
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
     /// The budgie silhouette, drawn at an arbitrary size. SF Symbols ships only
     /// one generic songbird glyph, which reads as mush — so the bird is composed
     /// from a few overlapping solid shapes (round head, hooked beak, plump body,
