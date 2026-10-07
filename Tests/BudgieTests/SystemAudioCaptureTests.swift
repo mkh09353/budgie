@@ -41,7 +41,8 @@ final class SystemAudioCaptureTests: XCTestCase {
 
     /// A whole meeting through the real devices: another process speaks
     /// through the speakers, so "Them" hears it directly and the mic hears it
-    /// as echo, which must not come back as "Me".
+    /// as echo, which must not come back as "Me". Transcribed live in 5 s
+    /// chunks, so the second sentence lands in a later chunk than the first.
     func testRecordsAndTranscribesALiveMeeting() throws {
         guard ProcessInfo.processInfo.environment["BUDGIE_SYSTEM_AUDIO_TEST"] == "1" else {
             throw XCTSkip("Set BUDGIE_SYSTEM_AUDIO_TEST=1 to record a live meeting")
@@ -54,16 +55,23 @@ final class SystemAudioCaptureTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let folder = try MeetingLibrary.createFolder(in: root, started: Date())
         let recorder = MeetingRecorder()
-        try recorder.start(in: folder)
+        recorder.chunkSeconds = 5
+        let live = MeetingLiveTranscriber(engine: StandardTranscriber())
+        try recorder.start(in: folder, transcriber: live)
 
-        let speaker = Process()
-        speaker.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        speaker.arguments = ["The quarterly budget review moves to Thursday afternoon."]
-        try speaker.run()
-        speaker.waitUntilExit()
+        for (index, sentence) in ["The quarterly budget review moves to Thursday afternoon.",
+                                  "Please bring the hiring numbers."].enumerated() {
+            if index > 0 { RunLoop.current.run(until: Date().addingTimeInterval(2)) }
+            let speaker = Process()
+            speaker.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+            speaker.arguments = [sentence]
+            try speaker.run()
+            speaker.waitUntilExit()
+        }
         RunLoop.current.run(until: Date().addingTimeInterval(1))
 
         let result = recorder.stop()
+        let stopped = Date()
         var info = try MeetingLibrary.readInfo(from: folder)
         info.duration = result.duration
         info.heardSystemAudio = result.heardSystemAudio
@@ -71,13 +79,23 @@ final class SystemAudioCaptureTests: XCTestCase {
         try MeetingLibrary.writeInfo(info, to: folder)
         XCTAssertTrue(result.heardSystemAudio)
 
-        let transcript = try MeetingLibrary.transcribe(folder: folder, engine: StandardTranscriber()) { _ in }
+        let done = expectation(description: "live transcription finished")
+        var words: Result<(me: [TranscriptWord], them: [TranscriptWord]), Error>?
+        live.finish {
+            words = $0
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 120)
+        let finished = try XCTUnwrap(words).get()
+        let transcript = try MeetingLibrary.save(folder: folder, me: finished.me, them: finished.them)
         print(transcript.markdown())
+        print(String(format: "transcript ready %.2fs after stop", Date().timeIntervalSince(stopped)))
         if let keep = ProcessInfo.processInfo.environment["BUDGIE_KEEP_MEETING"] {
             try? FileManager.default.copyItem(at: folder, to: URL(fileURLWithPath: keep))
         }
         let theirs = transcript.lines.filter { $0.speaker == .them }.map(\.text).joined(separator: " ")
         XCTAssertTrue(theirs.lowercased().contains("budget review"), "Them: \(theirs)")
+        XCTAssertTrue(theirs.lowercased().contains("hiring numbers"), "Them: \(theirs)")
         // The echo check means something only if the mic heard the speakers:
         // a test host without microphone permission records silence.
         guard result.heardMicAudio else {

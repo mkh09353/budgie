@@ -105,22 +105,27 @@ enum MeetingLibrary {
         return Array(summaries.sorted { $0.started > $1.started }.prefix(limit))
     }
 
-    /// Transcribes both channels of a recorded meeting and writes
-    /// `transcript.md` and `transcript.json` into its folder. Blocks; call it
-    /// off the main thread. `progress` is called on the calling queue.
+    /// Transcribes both channels of a recorded meeting from its files and
+    /// saves the transcript. Used to retry a meeting, and when live
+    /// transcription failed. Blocks; call it off the main thread. `progress`
+    /// is called on the calling queue.
     static func transcribe(
         folder: URL, engine: StandardTranscriber,
         progress: (MeetingStage) -> Void
     ) throws -> MeetingTranscript {
-        let info = try readInfo(from: folder)
         if !StandardTranscriber.standardModelAvailable { progress(.downloadingModel) }
-
         progress(.transcribingMe)
         let me = try words(in: folder.appendingPathComponent(MeetingRecorder.meFileName), engine: engine)
         progress(.transcribingThem)
         let them = try words(in: folder.appendingPathComponent(MeetingRecorder.themFileName), engine: engine)
-
         progress(.saving)
+        return try save(folder: folder, me: me, them: them)
+    }
+
+    /// Merges each channel's words and writes `transcript.md`,
+    /// `transcript.json` and the preview.
+    static func save(folder: URL, me: [TranscriptWord], them: [TranscriptWord]) throws -> MeetingTranscript {
+        let info = try readInfo(from: folder)
         let duration = info.duration ?? audioDuration(of: folder.appendingPathComponent(MeetingRecorder.meFileName))
         let transcript = MeetingTranscript.merge(
             me: me, them: them, started: info.started, duration: duration,

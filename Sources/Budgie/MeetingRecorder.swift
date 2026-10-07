@@ -6,6 +6,9 @@ import CoreAudio
 /// at the same instant: a stream whose first buffer arrives late is padded with
 /// silence, so a word at 0:42 in one file happened at 0:42 in the other.
 ///
+/// With a `MeetingLiveTranscriber`, each stream is also cut into chunks that
+/// are transcribed while the meeting is still going.
+///
 /// Unlike Live dictation, nothing is ever dropped: every buffer is written.
 /// The mic runs on its own `AVAudioEngine`, so push-to-talk keeps working
 /// during a meeting.
@@ -15,6 +18,8 @@ final class MeetingRecorder {
 
     /// Called on the main thread with the latest mic / system levels (0...1).
     var onLevels: ((Float, Float) -> Void)?
+    /// Seconds of audio per live-transcribed chunk.
+    var chunkSeconds: TimeInterval = 60
 
     struct Result {
         let duration: TimeInterval
@@ -41,19 +46,22 @@ final class MeetingRecorder {
         return false
     }
 
-    func start(in folder: URL) throws {
+    func start(in folder: URL, transcriber: MeetingLiveTranscriber? = nil) throws {
         guard #available(macOS 14.2, *) else {
             throw SystemAudioError.coreAudio("record system audio before macOS 14.2", kAudioHardwareUnsupportedOperationError)
         }
         startHostTime = mach_absolute_time()
-        let me = MeetingStreamWriter(
-            writer: try PCMFileWriter(url: folder.appendingPathComponent(Self.meFileName)),
-            startHostTime: startHostTime
-        )
-        let them = MeetingStreamWriter(
-            writer: try PCMFileWriter(url: folder.appendingPathComponent(Self.themFileName)),
-            startHostTime: startHostTime
-        )
+        func stream(_ name: String, _ speaker: Speaker) throws -> MeetingStreamWriter {
+            let chunker = transcriber.map { transcriber in
+                AudioChunker(speaker: speaker, target: chunkSeconds, onChunk: transcriber.submit)
+            }
+            return MeetingStreamWriter(
+                writer: try PCMFileWriter(url: folder.appendingPathComponent(name)),
+                startHostTime: startHostTime, chunker: chunker
+            )
+        }
+        let me = try stream(Self.meFileName, .me)
+        let them = try stream(Self.themFileName, .them)
         meWriter = me
         themWriter = them
 
@@ -83,7 +91,8 @@ final class MeetingRecorder {
         }
     }
 
-    /// Stops both streams and closes the files.
+    /// Stops both streams and closes the files. The last chunk of each stream
+    /// has been handed to the live transcriber by the time this returns.
     func stop() -> Result {
         levelTimer?.invalidate()
         levelTimer = nil
@@ -153,12 +162,15 @@ final class MeetingRecorder {
 private final class MeetingStreamWriter {
     private let writer: PCMFileWriter
     private let startHostTime: UInt64
+    private let chunker: AudioChunker?
     private var started = false
     private(set) var heardSound = false
 
-    init(writer: PCMFileWriter, startHostTime: UInt64) {
+    init(writer: PCMFileWriter, startHostTime: UInt64, chunker: AudioChunker?) {
         self.writer = writer
         self.startHostTime = startHostTime
+        self.chunker = chunker
+        if let chunker { writer.onWrite = chunker.append }
     }
 
     func append(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
@@ -181,5 +193,6 @@ private final class MeetingStreamWriter {
         let missing = duration - writer.secondsWritten
         if missing > 0.05 { try? writer.appendSilence(seconds: missing) }
         writer.finish()
+        chunker?.finish()
     }
 }

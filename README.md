@@ -13,8 +13,9 @@ Parakeet TDT 0.6b v3, 213 MB), downloading it on first use.
 
 **Record a meeting** from the menu bar and Budgie captures your microphone as
 "Me" and everything the Mac plays as "Them" (a Core Audio process tap, so any
-call app works and no bot joins; macOS 14.2+). When you stop, it transcribes both
-on-device with parakeet-redux and writes one merged, timestamped
+call app works and no bot joins; macOS 14.2+). Both are transcribed on-device
+with parakeet-redux a minute at a time while you talk, so when you stop, Budgie
+only finishes the last minute and writes one merged, timestamped
 `transcript.md` (plus `transcript.json` and the two WAVs) into
 `~/Meetings/<date-time>/`, ready to hand to Claude or Codex. Words the mic picks
 up from your speakers are removed from "Me".

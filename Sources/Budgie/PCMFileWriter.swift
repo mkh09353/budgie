@@ -7,6 +7,8 @@ import AVFoundation
 final class PCMFileWriter {
     let url: URL
     private(set) var framesWritten: AVAudioFramePosition = 0
+    /// Sees every 16 kHz mono Float32 buffer as it is written, silence included.
+    var onWrite: ((AVAudioPCMBuffer) -> Void)?
 
     private var file: AVAudioFile?
     private let outputFormat = AVAudioFormat(
@@ -49,6 +51,10 @@ final class PCMFileWriter {
 
     func append(_ buffer: AVAudioPCMBuffer) throws {
         guard buffer.frameLength > 0 else { return }
+        if buffer.format == outputFormat {
+            try write(buffer)
+            return
+        }
         let converter = try converter(for: buffer.format)
         let ratio = outputFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1_024
@@ -83,6 +89,7 @@ final class PCMFileWriter {
         guard let file, buffer.frameLength > 0 else { return }
         try file.write(from: buffer)
         framesWritten += AVAudioFramePosition(buffer.frameLength)
+        onWrite?(buffer)
     }
 
     private func converter(for format: AVAudioFormat) throws -> AVAudioConverter {

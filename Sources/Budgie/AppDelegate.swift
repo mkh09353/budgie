@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var keyMonitor: KeyMonitor?
     private let meetingRecorder = MeetingRecorder()
     private var meetingFolder: URL?
+    private var meetingTranscriber: MeetingLiveTranscriber?
     private var meetingClock: Timer?
     private let meetingQueue = DispatchQueue(label: "com.maxheadley.budgie.meeting", qos: .userInitiated)
 
@@ -290,13 +291,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let started = Date()
         do {
             let folder = try MeetingLibrary.createFolder(in: prefs.meetingsFolder, started: started)
+            let transcriber = MeetingLiveTranscriber(engine: engine)
+            transcriber.onChunkStart = { [weak self] speaker in
+                // Only shown once the meeting has stopped and its last chunks run.
+                DispatchQueue.main.async {
+                    guard let self, case .processing = self.state.meeting else { return }
+                    self.state.meeting = .processing(speaker == .me ? .transcribingMe : .transcribingThem)
+                }
+            }
             do {
-                try meetingRecorder.start(in: folder)
+                try meetingRecorder.start(in: folder, transcriber: transcriber)
             } catch {
                 try? FileManager.default.removeItem(at: folder)
                 throw error
             }
             meetingFolder = folder
+            meetingTranscriber = transcriber
             state.meeting = .recording(started: started)
             meetingClock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 self?.updateIcon()
@@ -309,8 +319,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func stopMeeting() {
-        guard state.meeting.isRecording, let folder = finishMeetingRecording() else { return }
-        transcribeMeeting(in: folder)
+        guard state.meeting.isRecording else { return }
+        let transcriber = meetingTranscriber
+        guard let folder = finishMeetingRecording() else { return }
+        transcribeMeeting(in: folder, live: transcriber)
     }
 
     /// Stops capture, closes both WAVs and records the duration. Returns the
@@ -320,6 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         meetingClock?.invalidate()
         meetingClock = nil
         let result = meetingRecorder.stop()
+        meetingTranscriber = nil
         guard let folder = meetingFolder else { return nil }
         meetingFolder = nil
         if var info = try? MeetingLibrary.readInfo(from: folder) {
@@ -332,15 +345,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return folder
     }
 
-    /// Transcribes a recorded meeting folder; also used to retry one.
-    private func transcribeMeeting(in folder: URL) {
+    /// Saves a meeting's transcript. With `live`, only the chunks still
+    /// queued are left to transcribe; without it (a retry, or if a live chunk
+    /// failed) both files are transcribed from scratch.
+    private func transcribeMeeting(in folder: URL, live: MeetingLiveTranscriber? = nil) {
         guard !state.meeting.isBusy else { return }
         state.meeting = .processing(.transcribingMe)
         startTranscribeAnimation()
+        guard let live else {
+            runMeetingJob(folder: folder) { engine, progress in
+                try MeetingLibrary.transcribe(folder: folder, engine: engine, progress: progress)
+            }
+            return
+        }
+        live.finish { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let words):
+                self.runMeetingJob(folder: folder) { _, progress in
+                    progress(.saving)
+                    return try MeetingLibrary.save(folder: folder, me: words.me, them: words.them)
+                }
+            case .failure(let error):
+                NSLog("Budgie: live meeting transcription failed, retrying from the files: \(error)")
+                self.runMeetingJob(folder: folder) { engine, progress in
+                    try MeetingLibrary.transcribe(folder: folder, engine: engine, progress: progress)
+                }
+            }
+        }
+    }
+
+    private func runMeetingJob(
+        folder: URL,
+        _ job: @escaping (StandardTranscriber, (MeetingStage) -> Void) throws -> MeetingTranscript
+    ) {
         meetingQueue.async { [weak self] in
             guard let self else { return }
             let result = Result {
-                try MeetingLibrary.transcribe(folder: folder, engine: self.engine) { stage in
+                try job(self.engine) { stage in
                     DispatchQueue.main.async { self.state.meeting = .processing(stage) }
                 }
             }
