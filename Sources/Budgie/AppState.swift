@@ -26,6 +26,27 @@ enum PunctuatedModelStatus: Equatable {
     }
 }
 
+/// What the meeting recorder is doing — drives the popover's meeting card and
+/// the menu bar timer.
+enum MeetingState: Equatable {
+    case idle
+    case recording(started: Date)
+    case processing(MeetingStage)
+    case failed(String, folder: URL?)
+
+    var isRecording: Bool {
+        if case .recording = self { return true }
+        return false
+    }
+
+    var isBusy: Bool {
+        switch self {
+        case .recording, .processing: return true
+        case .idle, .failed: return false
+        }
+    }
+}
+
 /// One finished dictation, kept for the popover's "Recent" list.
 struct Transcription: Identifiable, Codable {
     var id = UUID()
@@ -43,6 +64,12 @@ final class AppState: ObservableObject {
     @Published var recordingStarted: Date?
     @Published var pendingTranscriptionMode: TranscriptionMode?
     @Published var punctuatedModelStatus: PunctuatedModelStatus = .unavailable
+
+    @Published var meeting: MeetingState = .idle
+    /// Live meeting levels, 0...1: the mic ("Me") and system audio ("Them").
+    @Published var meetingMicLevel: Float = 0
+    @Published var meetingSystemLevel: Float = 0
+    @Published var meetings: [MeetingSummary] = []
 
     @Published var recent: [Transcription] = []
     @Published var wordsToday = 0

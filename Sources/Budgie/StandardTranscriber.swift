@@ -67,8 +67,18 @@ final class StandardTranscriber: @unchecked Sendable {
     /// Transcribe a finished WAV. Blocks the calling (background) queue until
     /// the result is ready.
     func transcribe(_ wavURL: URL) throws -> String {
+        try withLoadedContext { try $0.transcribe(wavPath: wavURL.path) }
+    }
+
+    /// Transcribe a meeting-length WAV, cut at pauses by the model's VAD head,
+    /// returning JSON with per-word timestamps. Blocks like `transcribe`.
+    func transcribeJSONWithVAD(_ wavURL: URL) throws -> String {
+        try withLoadedContext { try $0.transcribeJSONWithVAD(wavPath: wavURL.path) }
+    }
+
+    private func withLoadedContext<T>(_ body: @escaping (ParakeetContext) throws -> T) throws -> T {
         let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<String, Error> = .success("")
+        var result: Result<T, Error>?
 
         queue.async {
             defer { semaphore.signal() }
@@ -77,7 +87,7 @@ final class StandardTranscriber: @unchecked Sendable {
                 guard let context = self.context else {
                     throw StreamingTranscriberError.notLoaded
                 }
-                result = .success(try context.transcribe(wavPath: wavURL.path))
+                result = .success(try body(context))
             } catch {
                 NSLog("Budgie: standard transcription failed: \(error)")
                 result = .failure(error)
@@ -86,6 +96,7 @@ final class StandardTranscriber: @unchecked Sendable {
 
         semaphore.wait()
         scheduleIdleShutdown()
+        guard let result else { throw StreamingTranscriberError.notLoaded }
         return try result.get()
     }
 

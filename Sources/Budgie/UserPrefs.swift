@@ -104,6 +104,15 @@ final class UserPrefs: ObservableObject {
         didSet { d.set(onboardingCompleted, forKey: "onboardingCompleted") }
     }
 
+    /// Where meeting folders are saved. Plain files, outside any app container,
+    /// so coding agents can read transcripts straight from disk.
+    @Published var meetingsFolder: URL {
+        didSet { d.set(meetingsFolder.path, forKey: "meetingsFolder") }
+    }
+
+    static let defaultMeetingsFolder = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Meetings", isDirectory: true)
+
     private init() {
         hotKey = HotKey(rawValue: d.string(forKey: "hotKey") ?? "") ?? .rightCommand
         insertMode = InsertMode(rawValue: d.string(forKey: "insertMode") ?? "") ?? .type
@@ -114,6 +123,8 @@ final class UserPrefs: ObservableObject {
         showLabel = d.bool(forKey: "showLabel")
         launchAtLogin = SMAppService.mainApp.status == .enabled
         onboardingCompleted = d.bool(forKey: "onboardingCompleted")
+        meetingsFolder = d.string(forKey: "meetingsFolder")
+            .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? Self.defaultMeetingsFolder
     }
 
     private func applyLaunchAtLogin() {

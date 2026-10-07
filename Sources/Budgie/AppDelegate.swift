@@ -20,6 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let engine = StandardTranscriber()
     private let streamingEngine = StreamingTranscriber()
     private var keyMonitor: KeyMonitor?
+    private let meetingRecorder = MeetingRecorder()
+    private var meetingFolder: URL?
+    private var meetingClock: Timer?
+    private let meetingQueue = DispatchQueue(label: "com.maxheadley.budgie.meeting", qos: .userInitiated)
 
     private var busy = false
     private var recordingMode: TranscriptionMode?
@@ -49,6 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.applyStreamingTranscript(partial)
         }
         recorder.onLevel = { [weak self] level in self?.state.level = level }
+        meetingRecorder.onLevels = { [weak self] me, them in
+            self?.state.meetingMicLevel = me
+            self?.state.meetingSystemLevel = them
+        }
+        reloadMeetings()
 
         // Permissions are requested by the setup window — one at a time, in
         // order — instead of stacking three system dialogs here at launch.
@@ -74,9 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Redraw the menu bar icon whenever the state or live level changes.
         state.$dictation
-            .combineLatest(state.$level)
+            .combineLatest(state.$level, state.$meeting)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _, _ in self?.updateIcon() }
+            .sink { [weak self] _, _, _ in self?.updateIcon() }
+            .store(in: &cancellables)
+
+        prefs.$meetingsFolder
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reloadMeetings() }
             .store(in: &cancellables)
 
         // Rebind the push-to-talk key when the user picks a different one.
@@ -126,6 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Close the WAV files so the recording survives; it can be
+        // transcribed from the popover on the next launch.
+        if state.meeting.isRecording { finishMeetingRecording() }
         engine.shutdown()
         streamingEngine.shutdown(wait: true)
     }
@@ -148,6 +166,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let root = PopoverView(
             state: state,
             prefs: prefs,
+            meetingActions: MeetingActions(
+                start: { [weak self] in self?.startMeeting() },
+                stop: { [weak self] in self?.stopMeeting() },
+                transcribe: { [weak self] folder in self?.transcribeMeeting(in: folder) },
+                open: { [weak self] meeting in
+                    self?.popover.performClose(nil)
+                    NSWorkspace.shared.open(meeting.transcriptURL)
+                },
+                copy: { meeting in
+                    guard let text = try? String(contentsOf: meeting.transcriptURL) else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                },
+                reveal: { [weak self] meeting in
+                    self?.popover.performClose(nil)
+                    let file = meeting.hasTranscript ? meeting.transcriptURL : meeting.folder
+                    NSWorkspace.shared.activateFileViewerSelecting([file])
+                },
+                openFolder: { [weak self] in
+                    guard let self else { return }
+                    self.popover.performClose(nil)
+                    try? FileManager.default.createDirectory(
+                        at: self.prefs.meetingsFolder, withIntermediateDirectories: true
+                    )
+                    NSWorkspace.shared.open(self.prefs.meetingsFolder)
+                }
+            ),
             onOpenSettings: { [weak self] in
                 self?.popover.performClose(nil)
                 self?.openPreferences()
@@ -158,9 +203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let host = NSHostingController(rootView: root)
         // Pin the size so the popover opens flush under the menu bar instead of
         // being repositioned while SwiftUI settles its fitting size.
-        host.view.frame = NSRect(x: 0, y: 0, width: 312, height: 420)
+        host.view.frame = NSRect(origin: .zero, size: PopoverView.size)
         popover.contentViewController = host
-        popover.contentSize = NSSize(width: 312, height: 420)
+        popover.contentSize = PopoverView.size
     }
 
     @objc private func togglePopover() {
@@ -169,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             popover.performClose(nil)
         } else {
             state.refreshPermissions()
+            if !state.meeting.isBusy { reloadMeetings() }
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
@@ -181,9 +227,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let button = statusItem.button else { return }
         switch state.dictation {
         case .idle:
-            button.image = MenuBarIcon.idle()
-            button.contentTintColor = nil
-            button.title = prefs.showLabel ? " Budgie" : ""
+            switch state.meeting {
+            case .recording(let started):
+                // Always show the timer while a meeting records, label or not:
+                // it is the indicator that Budgie is capturing the call.
+                button.image = MenuBarIcon.idle()
+                button.contentTintColor = .systemRed
+                button.title = " " + MeetingTranscript.timestamp(Date().timeIntervalSince(started))
+            case .processing:
+                button.image = MenuBarIcon.transcribing(phase: transcribePhase)
+                button.contentTintColor = nil
+                button.title = prefs.showLabel ? " Transcribing" : ""
+            case .idle, .failed:
+                button.image = MenuBarIcon.idle()
+                button.contentTintColor = nil
+                button.title = prefs.showLabel ? " Budgie" : ""
+            }
         case .recording:
             button.image = MenuBarIcon.recording(level: state.level)
             button.contentTintColor = .systemRed
@@ -210,8 +269,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func stopTranscribeAnimation() {
+        // A meeting still being transcribed keeps the animation going.
+        if case .processing = state.meeting { return }
         transcribeTimer?.invalidate()
         transcribeTimer = nil
+    }
+
+    // MARK: - Meetings
+
+    private func reloadMeetings() {
+        state.meetings = MeetingLibrary.list(in: prefs.meetingsFolder)
+    }
+
+    private func startMeeting() {
+        guard !state.meeting.isBusy else { return }
+        guard MeetingRecorder.isSupported else {
+            state.meeting = .failed("Recording meetings needs macOS 14.2 or later.", folder: nil)
+            return
+        }
+        let started = Date()
+        do {
+            let folder = try MeetingLibrary.createFolder(in: prefs.meetingsFolder, started: started)
+            do {
+                try meetingRecorder.start(in: folder)
+            } catch {
+                try? FileManager.default.removeItem(at: folder)
+                throw error
+            }
+            meetingFolder = folder
+            state.meeting = .recording(started: started)
+            meetingClock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                self?.updateIcon()
+            }
+            reloadMeetings()
+        } catch {
+            NSLog("Budgie: could not start meeting: \(error)")
+            state.meeting = .failed("Could not start recording: \(error.localizedDescription)", folder: nil)
+        }
+    }
+
+    private func stopMeeting() {
+        guard state.meeting.isRecording, let folder = finishMeetingRecording() else { return }
+        transcribeMeeting(in: folder)
+    }
+
+    /// Stops capture, closes both WAVs and records the duration. Returns the
+    /// meeting's folder.
+    @discardableResult
+    private func finishMeetingRecording() -> URL? {
+        meetingClock?.invalidate()
+        meetingClock = nil
+        let result = meetingRecorder.stop()
+        guard let folder = meetingFolder else { return nil }
+        meetingFolder = nil
+        if var info = try? MeetingLibrary.readInfo(from: folder) {
+            info.duration = result.duration
+            info.heardSystemAudio = result.heardSystemAudio
+            info.heardMicAudio = result.heardMicAudio
+            try? MeetingLibrary.writeInfo(info, to: folder)
+        }
+        state.meeting = .idle
+        return folder
+    }
+
+    /// Transcribes a recorded meeting folder; also used to retry one.
+    private func transcribeMeeting(in folder: URL) {
+        guard !state.meeting.isBusy else { return }
+        state.meeting = .processing(.transcribingMe)
+        startTranscribeAnimation()
+        meetingQueue.async { [weak self] in
+            guard let self else { return }
+            let result = Result {
+                try MeetingLibrary.transcribe(folder: folder, engine: self.engine) { stage in
+                    DispatchQueue.main.async { self.state.meeting = .processing(stage) }
+                }
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    self.state.meeting = .idle
+                    if self.prefs.playSounds { NSSound(named: "Glass")?.play() }
+                case .failure(let error):
+                    NSLog("Budgie: meeting transcription failed: \(error)")
+                    self.state.meeting = .failed(self.meetingErrorMessage(error), folder: folder)
+                }
+                if case .transcribing = self.state.dictation {} else { self.stopTranscribeAnimation() }
+                self.reloadMeetings()
+            }
+        }
+    }
+
+    private func meetingErrorMessage(_ error: Error) -> String {
+        if case StreamingTranscriberError.modelDownloadFailed = error {
+            return "Could not download the speech model. Check your connection."
+        }
+        if case StreamingTranscriberError.symbolMissing = error {
+            return "This build's speech library is too old to transcribe meetings."
+        }
+        return "Transcription failed. The recording is saved."
     }
 
     // MARK: - Preferences window

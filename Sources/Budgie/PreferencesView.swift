@@ -19,6 +19,8 @@ struct PreferencesView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             HotkeyTab(prefs: prefs)
                 .tabItem { Label("Hotkey", systemImage: "keyboard") }
+            MeetingsTab(prefs: prefs)
+                .tabItem { Label("Meetings", systemImage: "record.circle") }
             PermissionsTab(state: state, onRunSetup: onRunSetup)
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
             AboutTab(state: state, onCheckForUpdates: onCheckForUpdates)
@@ -124,6 +126,79 @@ private struct GeneralTab: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+}
+
+// MARK: - Meetings
+
+struct MeetingsTab: View {
+    @ObservedObject var prefs: UserPrefs
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Save meetings in:")
+                HStack(spacing: 8) {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(.secondary)
+                    Text(prefs.meetingsFolder.abbreviatedPath)
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Change…", action: chooseFolder)
+                    Button("Show") {
+                        try? FileManager.default.createDirectory(
+                            at: prefs.meetingsFolder, withIntermediateDirectories: true
+                        )
+                        NSWorkspace.shared.open(prefs.meetingsFolder)
+                    }
+                }
+                Text("Each meeting is a folder holding transcript.md, ready to paste into Claude or Codex, plus transcript.json and the two recordings (me.wav and them.wav).")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("How it works")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\u{201C}Me\u{201D} is your microphone and \u{201C}Them\u{201D} is everything this Mac plays, so any call app works and no bot joins. When you stop, Budgie transcribes both on this Mac and merges them into one timeline. If you use speakers instead of headphones, words your mic picks up from the call are removed from \u{201C}Me\u{201D}.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("The first meeting asks to record system audio. If \u{201C}Them\u{201D} comes out empty, allow Budgie under Screen & System Audio Recording.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open Privacy Settings…") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = prefs.meetingsFolder
+        panel.prompt = "Choose"
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            prefs.meetingsFolder = url
         }
     }
 }

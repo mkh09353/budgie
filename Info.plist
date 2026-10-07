@@ -25,7 +25,9 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Budgie records your voice while you hold the push-to-talk key, then transcribes it.</string>
+    <string>Budgie records your voice while you hold the push-to-talk key, and your side of a meeting you record, then transcribes it on this Mac.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Budgie records the audio this Mac plays during a meeting you start, so it can transcribe the other people on the call. Nothing leaves this Mac.</string>
     <key>SUFeedURL</key>
     <string>https://github.com/mkh09353/budgie/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>

@@ -11,6 +11,14 @@ release the key, then transcribes the finished recording with Moondream's
 [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) (a ternary
 Parakeet TDT 0.6b v3, 213 MB), downloading it on first use.
 
+**Record a meeting** from the menu bar and Budgie captures your microphone as
+"Me" and everything the Mac plays as "Them" (a Core Audio process tap, so any
+call app works and no bot joins; macOS 14.2+). When you stop, it transcribes both
+on-device with parakeet-redux and writes one merged, timestamped
+`transcript.md` (plus `transcript.json` and the two WAVs) into
+`~/Meetings/<date-time>/`, ready to hand to Claude or Codex. Words the mic picks
+up from your speakers are removed from "Me".
+
 ## Building from source
 
 This repo holds **only the Budgie app**. The build embeds two things too large

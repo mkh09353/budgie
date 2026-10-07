@@ -414,6 +414,9 @@ final class ParakeetLibrary {
     let load: Load
     let free: Free
     let transcribePath: TranscribePath
+    /// Long-audio JSON transcription cut at the model's own VAD pauses. Absent
+    /// from parakeet.cpp builds older than the redux support, so optional.
+    let transcribePathJSONVAD: TranscribePath?
     let streamBegin: StreamBegin
     let streamFeed: StreamFeed
     let streamFinalize: StreamFinalize
@@ -453,6 +456,10 @@ final class ParakeetLibrary {
                 "parakeet_capi_transcribe_path",
                 from: opened
             )
+            let transcribePathJSONVAD: TranscribePath? = dlsym(
+                opened,
+                "parakeet_capi_transcribe_path_json_vad"
+            ).map { unsafeBitCast($0, to: TranscribePath.self) }
             let streamBegin: StreamBegin = try Self.symbol("parakeet_capi_stream_begin", from: opened)
             let streamFeed: StreamFeed = try Self.symbol("parakeet_capi_stream_feed", from: opened)
             let streamFinalize: StreamFinalize = try Self.symbol(
@@ -484,6 +491,7 @@ final class ParakeetLibrary {
             self.load = load
             self.free = free
             self.transcribePath = transcribePath
+            self.transcribePathJSONVAD = transcribePathJSONVAD
             self.streamBegin = streamBegin
             self.streamFeed = streamFeed
             self.streamFinalize = streamFinalize
@@ -545,6 +553,20 @@ final class ParakeetContext {
         guard let result = wavPath.withCString({
             library.transcribePath(pointer, $0, decoder)
         }) else {
+            throw StreamingTranscriberError.transcribeFailed(lastErrorMessage)
+        }
+        defer { library.freeString(result) }
+        return String(cString: result)
+    }
+
+    /// Transcribes a WAV of any length, cut at pauses by the model's VAD head,
+    /// returning parakeet.cpp's JSON document with per-word timestamps
+    /// relative to the whole file.
+    func transcribeJSONWithVAD(wavPath: String, decoder: CInt = 0) throws -> String {
+        guard let transcribe = library.transcribePathJSONVAD else {
+            throw StreamingTranscriberError.symbolMissing("parakeet_capi_transcribe_path_json_vad")
+        }
+        guard let result = wavPath.withCString({ transcribe(pointer, $0, decoder) }) else {
             throw StreamingTranscriberError.transcribeFailed(lastErrorMessage)
         }
         defer { library.freeString(result) }
