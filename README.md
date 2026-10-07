@@ -203,14 +203,16 @@ The icon is a small live instrument:
 | Icon | Meaning |
 |------|---------|
 | bird                  | idle, ready |
-| live level bars (red) | recording — bar heights track your voice |
+| live level bars (red) | dictating — bar heights track your voice |
+| red timer             | recording a meeting |
 | animated dots         | transcribing |
 | warning triangle      | permission missing |
 
-Clicking the icon opens a popover showing the push-to-talk key, engine
-warmth, words dictated today, and your recent transcriptions (click any to
-copy it). **Settings…** opens a sectioned preferences window: General,
-Hotkey, Permissions and About.
+Clicking the icon opens a popover with **Record Meeting** (live Me/Them levels
+and a Stop button while recording), a one-line dictation strip with today's
+speed versus typing, and a Meetings / Dictations history: click a meeting to
+open its transcript, or a dictation to copy it. **Settings…** opens a sectioned
+preferences window: General, Hotkey, Meetings, Permissions and About.
 
 ## Configuration
 
