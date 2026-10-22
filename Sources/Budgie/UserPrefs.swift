@@ -35,7 +35,7 @@ enum HotKey: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The symbol shown on the popover's keycap.
+    /// The symbol shown on keycaps in the panel and Settings.
     var keycap: String {
         switch self {
         case .rightCommand, .leftCommand: return "⌘"
@@ -113,6 +113,20 @@ final class UserPrefs: ObservableObject {
     static let defaultMeetingsFolder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Meetings", isDirectory: true)
 
+    /// Double-tap the dictation key to save the selection; tap then hold to
+    /// add a spoken note. Off makes the key plain push-to-talk again.
+    @Published var saveGestureEnabled: Bool {
+        didSet { d.set(saveGestureEnabled, forKey: "saveGestureEnabled") }
+    }
+    /// A pinned Saved panel stays up when you click into other apps.
+    @Published var panelPinned: Bool {
+        didSet { d.set(panelPinned, forKey: "panelPinned") }
+    }
+    /// Checked-off saves stay visible (struck through) until cleared.
+    @Published var showDoneItems: Bool {
+        didSet { d.set(showDoneItems, forKey: "showDoneItems") }
+    }
+
     private init() {
         hotKey = HotKey(rawValue: d.string(forKey: "hotKey") ?? "") ?? .rightCommand
         insertMode = InsertMode(rawValue: d.string(forKey: "insertMode") ?? "") ?? .type
@@ -125,6 +139,9 @@ final class UserPrefs: ObservableObject {
         onboardingCompleted = d.bool(forKey: "onboardingCompleted")
         meetingsFolder = d.string(forKey: "meetingsFolder")
             .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? Self.defaultMeetingsFolder
+        saveGestureEnabled = d.object(forKey: "saveGestureEnabled") as? Bool ?? true
+        panelPinned = d.bool(forKey: "panelPinned")
+        showDoneItems = d.object(forKey: "showDoneItems") as? Bool ?? true
     }
 
     private func applyLaunchAtLogin() {

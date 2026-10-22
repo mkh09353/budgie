@@ -5,7 +5,7 @@ import Sparkle
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
-    private let popover = NSPopover()
+    private var panelController: SavedPanelController!
     private var prefsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private lazy var updaterController = SPUStandardUpdaterController(
@@ -28,10 +28,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var meetingClock: Timer?
     private let meetingQueue = DispatchQueue(label: "com.maxheadley.budgie.meeting", qos: .userInitiated)
 
+    private let saveStore = SaveStore()
+    private lazy var saveCoordinator = SaveCoordinator(store: saveStore, prefs: prefs)
+    private var gesture = HotKeyGesture()
+    private var gestureTimer: DispatchWorkItem?
+
     private var busy = false
     private var recordingMode: TranscriptionMode?
     private var streamingSessionActive = false
     private var streamingLiveText = ""
+    /// Where the transcript of the current recording goes.
+    private var dictationTarget: DictationTarget = .focusedApp
+    /// Live text is held back until the press is known to be a hold, so a
+    /// tap (the start of a double tap) never types anything.
+    private var typingHeld = false
+    private var heldPartial: String?
+    /// A tap-length recording, kept until we know whether a second tap follows.
+    private var pausedTake: Take?
     private var punctuatedPreparationID: UUID?
     private let workQueue = DispatchQueue(label: "com.maxheadley.budgie.work")
     private var cancellables = Set<AnyCancellable>()
@@ -43,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = updaterController
         buildStatusItem()
-        buildPopover()
+        buildPanel()
 
         engine.onWarmChange = { [weak self] warm in
             guard let self, self.prefs.transcriptionMode == .standard else { return }
@@ -97,6 +110,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] _ in self?.reloadMeetings() }
             .store(in: &cancellables)
 
+        prefs.$saveGestureEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                self.gesture.savingEnabled = enabled
+            }
+            .store(in: &cancellables)
+
         // Rebind the push-to-talk key when the user picks a different one.
         prefs.$hotKey
             .dropFirst()
@@ -145,82 +166,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Close the WAV files so the recording survives; it can be
-        // transcribed from the popover on the next launch.
+        // transcribed from the Saved panel on the next launch.
         if state.meeting.isRecording { finishMeetingRecording() }
         engine.shutdown()
         streamingEngine.shutdown(wait: true)
     }
 
-    // MARK: - Menu bar item & popover
+    // MARK: - Menu bar item & Saved panel
 
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.imagePosition = .imageLeading
             button.target = self
-            button.action = #selector(togglePopover)
+            button.action = #selector(togglePanel)
         }
         updateIcon()
     }
 
-    private func buildPopover() {
-        popover.behavior = .transient
-        popover.animates = true
-        let root = PopoverView(
-            state: state,
-            prefs: prefs,
-            meetingActions: MeetingActions(
-                start: { [weak self] in self?.startMeeting() },
-                stop: { [weak self] in self?.stopMeeting() },
-                transcribe: { [weak self] folder in self?.transcribeMeeting(in: folder) },
-                open: { [weak self] meeting in
-                    self?.popover.performClose(nil)
-                    NSWorkspace.shared.open(meeting.transcriptURL)
-                },
-                copy: { meeting in
-                    guard let text = try? String(contentsOf: meeting.transcriptURL) else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                },
-                reveal: { [weak self] meeting in
-                    self?.popover.performClose(nil)
-                    let file = meeting.hasTranscript ? meeting.transcriptURL : meeting.folder
-                    NSWorkspace.shared.activateFileViewerSelecting([file])
-                },
-                openFolder: { [weak self] in
-                    guard let self else { return }
-                    self.popover.performClose(nil)
-                    try? FileManager.default.createDirectory(
-                        at: self.prefs.meetingsFolder, withIntermediateDirectories: true
-                    )
-                    NSWorkspace.shared.open(self.prefs.meetingsFolder)
-                }
-            ),
-            onOpenSettings: { [weak self] in
-                self?.popover.performClose(nil)
-                self?.openPreferences()
+    private func buildPanel() {
+        let model = SavedListModel(store: saveStore,
+                                   coordinator: saveCoordinator,
+                                   state: state,
+                                   prefs: prefs)
+        model.onOpenSettings = { [weak self] in self?.openPreferences() }
+        model.onCheckForUpdates = { [weak self] in self?.checkForUpdates() }
+        model.onInstallUpdate = { [weak self] in self?.installPendingUpdate() }
+        model.onPasteLastDictation = { [weak self] in self?.pasteLastDictation() }
+        model.meetingActions = MeetingActions(
+            start: { [weak self] in self?.startMeeting() },
+            stop: { [weak self] in self?.stopMeeting() },
+            transcribe: { [weak self] folder in self?.transcribeMeeting(in: folder) },
+            open: { [weak self] meeting in
+                self?.panelController.close()
+                NSWorkspace.shared.open(meeting.transcriptURL)
             },
-            onCheckForUpdates: { [weak self] in self?.checkForUpdates() },
-            onInstallUpdate: { [weak self] in self?.installPendingUpdate() },
-            onQuit: { NSApp.terminate(nil) }
+            copy: { meeting in
+                guard let text = try? String(contentsOf: meeting.transcriptURL) else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            },
+            reveal: { [weak self] meeting in
+                self?.panelController.close()
+                let file = meeting.hasTranscript ? meeting.transcriptURL : meeting.folder
+                NSWorkspace.shared.activateFileViewerSelecting([file])
+            },
+            openFolder: { [weak self] in
+                guard let self else { return }
+                self.panelController.close()
+                try? FileManager.default.createDirectory(
+                    at: self.prefs.meetingsFolder, withIntermediateDirectories: true
+                )
+                NSWorkspace.shared.open(self.prefs.meetingsFolder)
+            }
         )
-        let host = NSHostingController(rootView: root)
-        // The popover follows the view's height: short with little history,
-        // taller while a meeting records.
-        host.sizingOptions = .preferredContentSize
-        popover.contentViewController = host
+        panelController = SavedPanelController(model: model, prefs: prefs)
+        saveCoordinator.appState = state
+        saveCoordinator.isPanelVisible = { [weak self] in
+            self?.panelController.isVisible ?? false
+        }
+        saveCoordinator.isPanelKey = { [weak self] in
+            self?.panelController.isKey ?? false
+        }
     }
 
-    @objc private func togglePopover() {
-        guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
-        } else {
-            state.refreshPermissions()
-            if !state.meeting.isBusy { reloadMeetings() }
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+    @objc private func togglePanel() {
+        state.refreshPermissions()
+        if !state.meeting.isBusy { reloadMeetings() }
+        panelController.toggle(from: statusItem.button)
+    }
+
+    /// Re-delivers the most recent dictation — for when it landed in the
+    /// wrong field. The panel closes first so focus returns to that app.
+    private func pasteLastDictation() {
+        guard let text = state.recent.first?.text else { return }
+        panelController.close()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.deliver(text)
         }
     }
 
@@ -427,17 +449,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Preferences window
 
     private func checkForUpdates() {
-        popover.performClose(nil)
+        panelController.close()
         NSApp.activate(ignoringOtherApps: true)
         updaterController.checkForUpdates(nil)
     }
 
-    /// The popover's update banner: restart into a downloaded update, or open
+    /// The Saved panel's update banner: restart into a downloaded update, or open
     /// Sparkle's window when automatic updates are off.
     private func installPendingUpdate() {
         guard !state.meeting.isBusy else { return }
         if case .ready = state.update, let installUpdate {
-            popover.performClose(nil)
+            panelController.close()
             installUpdate()
         } else {
             checkForUpdates()
@@ -521,12 +543,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyMonitor = nil
         state.keyMonitorRunning = false
 
+        resetGesture()
         let hotKey = prefs.hotKey
         let monitor = KeyMonitor(
             keyCode: hotKey.keyCode,
             flag: hotKey.flag,
-            onPress: { [weak self] in self?.startRecording() },
-            onRelease: { [weak self] in self?.stopAndTranscribe() }
+            onPress: { [weak self] time in
+                guard let self else { return }
+                self.perform(self.gesture.press(at: time))
+            },
+            onRelease: { [weak self] time in
+                guard let self else { return }
+                self.perform(self.gesture.release(at: time))
+            },
+            onOtherKey: { [weak self] keyCode, time in
+                guard let self else { return }
+                self.perform(self.gesture.otherKey(keyCode, at: time))
+            }
         )
         if monitor.start() {
             keyMonitor = monitor
@@ -633,12 +666,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
 
+    // MARK: - Gesture
+
+    /// Carries out what the gesture recognizer decided, then re-arms its timer.
+    private func perform(_ actions: [HotKeyGesture.Action]) {
+        for action in actions {
+            switch action {
+            case .beginDictation:
+                startRecording(target: .focusedApp, holdTyping: true)
+            case .confirmDictation:
+                releaseHeldTyping()
+            case .finishDictation:
+                if let take = stopRecording() { transcribe(take, target: .focusedApp) }
+            case .pauseDictation:
+                pausedTake = stopRecording()
+            case .finishPausedDictation:
+                if let take = pausedTake {
+                    pausedTake = nil
+                    typingHeld = false
+                    transcribe(take, target: .focusedApp)
+                }
+            case .discardDictation:
+                if let take = stopRecording() { discard(take) }
+                if let take = pausedTake {
+                    pausedTake = nil
+                    discard(take)
+                }
+            case .beginSave:
+                saveCoordinator.beginSave()
+                // Start listening now so the first words of a note aren't clipped.
+                startRecording(target: .note, holdTyping: true)
+            case .commitSave:
+                if let take = stopRecording() { discard(take) }
+                saveCoordinator.commitSave()
+            case .beginNote:
+                saveCoordinator.beginNote(micRunning: recordingMode != nil)
+                if let partial = heldPartial { saveCoordinator.updateLiveNote(partial) }
+            case .finishNote:
+                let ticket = saveCoordinator.endNoteRecording()
+                if let take = stopRecording() {
+                    transcribe(take, target: .note, ticket: ticket)
+                } else {
+                    saveCoordinator.finishNote(ticket, text: nil)
+                }
+            case .cancelSave:
+                if let take = stopRecording() { discard(take) }
+                saveCoordinator.cancelSave()
+            }
+        }
+        scheduleGestureTimer()
+    }
+
+    private func scheduleGestureTimer(retries: Int = 0) {
+        gestureTimer?.cancel()
+        gestureTimer = nil
+        guard let deadline = gesture.deadline else { return }
+        let delay = retries > 0 ? 0.015 : max(0, deadline - ProcessInfo.processInfo.systemUptime)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // If the key's physical state disagrees with the gesture, its
+            // press/release event is still queued: let it land first.
+            if let expected = self.gesture.expectsKeyDown, retries < 12,
+               CGEventSource.keyState(.hidSystemState,
+                                      key: CGKeyCode(self.prefs.hotKey.keyCode)) != expected {
+                self.scheduleGestureTimer(retries: retries + 1)
+                return
+            }
+            self.perform(self.gesture.timerFired(at: ProcessInfo.processInfo.systemUptime))
+        }
+        gestureTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func resetGesture() {
+        gestureTimer?.cancel()
+        gestureTimer = nil
+        gesture.reset()
+        gesture.savingEnabled = prefs.saveGestureEnabled
+        if let take = stopRecording() { discard(take) }
+        if let take = pausedTake {
+            pausedTake = nil
+            discard(take)
+        }
+        saveCoordinator.cancelSave()
+    }
+
     // MARK: - Dictation flow
 
-    private func startRecording() {
-        guard !busy else { return }
+    private enum DictationTarget {
+        /// Typed into (or copied for) the focused app — ordinary dictation.
+        case focusedApp
+        /// The spoken "why" attached to a save.
+        case note
+    }
+
+    /// A finished recording, not yet transcribed.
+    private struct Take {
+        let mode: TranscriptionMode
+        let wav: URL?
+        let duration: TimeInterval
+    }
+
+    private func startRecording(target: DictationTarget, holdTyping: Bool) {
+        guard !busy, recordingMode == nil else { return }
         let mode = prefs.transcriptionMode
         recordingMode = mode
+        dictationTarget = target
+        typingHeld = holdTyping
+        heldPartial = nil
         if mode == .streaming {
             streamingSessionActive = true
             streamingLiveText = ""
@@ -654,34 +789,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         state.dictation = .recording
     }
 
-    private func stopAndTranscribe() {
-        guard !busy, case .recording = state.dictation else {
-            state.dictation = .idle
-            return
+    /// The press turned out to be a hold: let the live transcript through.
+    private func releaseHeldTyping() {
+        guard typingHeld else { return }
+        typingHeld = false
+        if let partial = heldPartial {
+            heldPartial = nil
+            applyStreamingTranscript(partial)
         }
-        let recordingDuration = state.recordingStarted
-            .map { Date().timeIntervalSince($0) } ?? 0
+    }
+
+    /// Stops the microphone, returning what was recorded (nil if nothing was).
+    private func stopRecording() -> Take? {
+        guard let mode = recordingMode else { return nil }
+        let duration = state.recordingStarted.map { Date().timeIntervalSince($0) } ?? 0
         state.recordingStarted = nil
-        let mode = recordingMode ?? prefs.transcriptionMode
         recordingMode = nil
         let wav = recorder.stop(shouldWriteWav: mode == .standard)
         recorder.onBuffer = nil
+        if case .recording = state.dictation { state.dictation = .idle }
+        return Take(mode: mode, wav: wav, duration: duration)
+    }
 
-        guard recordingDuration >= Config.minRecordingSeconds else {
-            if mode == .streaming { streamingEngine.cancelSession() }
-            streamingSessionActive = false
-            streamingLiveText = ""
-            state.dictation = .idle
-            switchToPreparedPunctuatedModeIfPossible()
+    /// Throws a recording away without transcribing it.
+    private func discard(_ take: Take) {
+        if take.mode == .streaming { streamingEngine.cancelSession() }
+        if let wav = take.wav { try? FileManager.default.removeItem(at: wav) }
+        streamingSessionActive = false
+        streamingLiveText = ""
+        heldPartial = nil
+        switchToPreparedPunctuatedModeIfPossible()
+    }
+
+    /// `ticket` is the save a `.note` transcript belongs to.
+    private func transcribe(_ take: Take, target: DictationTarget, ticket: SaveTicket? = nil) {
+        guard !busy else {
+            discard(take)
+            if target == .note { saveCoordinator.finishNote(ticket, text: nil) }
             return
         }
-        if mode == .standard, wav == nil {
-            state.dictation = .idle
-            switchToPreparedPunctuatedModeIfPossible()
+        let mode = take.mode
+        let wav = take.wav
+        let recordingDuration = take.duration
+
+        guard recordingDuration >= Config.minRecordingSeconds,
+              mode == .streaming || wav != nil else {
+            discard(take)
+            if target == .note { saveCoordinator.finishNote(ticket, text: nil) }
             return
         }
 
         busy = true
+        dictationTarget = target
         state.dictation = .transcribing
         startTranscribeAnimation()
         let startedAt = Date()
@@ -717,12 +876,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if let errorMessage {
                     self.streamingSessionActive = false
                     self.state.dictation = .error(errorMessage)
+                    if target == .note { self.saveCoordinator.finishNote(ticket, text: nil) }
                     return
                 }
                 self.state.dictation = .idle
-                let finalText = mode == .streaming && text.isEmpty
-                    ? self.streamingLiveText
-                    : text
+                // If the engine's final pass came back empty, fall back to the
+                // last live text (typed, or held back while undecided).
+                let liveText = self.streamingLiveText.isEmpty
+                    ? (self.heldPartial ?? "")
+                    : self.streamingLiveText
+                let finalText = mode == .streaming && text.isEmpty ? liveText : text
+                if target == .note {
+                    self.streamingSessionActive = false
+                    self.streamingLiveText = ""
+                    self.heldPartial = nil
+                    self.saveCoordinator.finishNote(ticket, text: finalText.isEmpty ? nil : finalText)
+                    self.switchToPreparedPunctuatedModeIfPossible()
+                    return
+                }
+                self.heldPartial = nil
                 guard !finalText.isEmpty else {
                     self.streamingSessionActive = false
                     self.streamingLiveText = ""
@@ -800,6 +972,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !transcript.isEmpty else { return }
 
+        // A note's words go to the save, never into the app.
+        if dictationTarget == .note {
+            heldPartial = transcript
+            saveCoordinator.updateLiveNote(transcript)
+            return
+        }
+        if typingHeld {
+            heldPartial = transcript
+            return
+        }
+
         switch prefs.insertMode {
         case .type:
             replaceTypedStreamingText(with: transcript)
@@ -852,7 +1035,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
 extension AppDelegate: SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     /// Budgie never quits on its own, so an update installed "on quit" would
-    /// wait forever. Hold it and offer Restart to Update in the popover.
+    /// wait forever. Hold it and offer Restart to Update in the Saved panel.
     func updater(
         _ updater: SPUUpdater,
         willInstallUpdateOnQuit item: SUAppcastItem,
@@ -868,7 +1051,7 @@ extension AppDelegate: SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
         if case .available = state.update { state.update = nil }
     }
 
-    // With automatic updates off, scheduled updates show as the popover banner
+    // With automatic updates off, scheduled updates show as the Saved panel's banner
     // instead of a window popping up over whatever the user is doing.
     var supportsGentleScheduledUpdateReminders: Bool { true }
 

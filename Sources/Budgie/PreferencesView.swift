@@ -216,33 +216,51 @@ private struct HotkeyTab: View {
             .pickerStyle(.menu)
             .fixedSize()
 
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Text("Hold").foregroundStyle(.secondary)
-                    Text(prefs.hotKey.keycap)
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .frame(minWidth: 44, minHeight: 40)
-                        .background(RoundedRectangle(cornerRadius: 9)
-                            .fill(Color.secondary.opacity(0.16)))
-                        .overlay(RoundedRectangle(cornerRadius: 9)
-                            .strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1))
-                    Text("to record, release to transcribe")
-                        .foregroundStyle(.secondary)
-                }
-                Text("The key keeps its normal behaviour on a quick tap — "
-                     + "it only records while held.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
+            VStack(alignment: .leading, spacing: 10) {
+                gestureRow(keys: 1, action: "Hold", result: "Dictate into the focused app")
+                gestureRow(keys: 2, action: "Double-tap", result: "Save the selected text",
+                           enabled: prefs.saveGestureEnabled)
+                gestureRow(keys: 2, action: "Tap, then hold", result: "Save it and say why",
+                           enabled: prefs.saveGestureEnabled)
             }
             .padding(16)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(Color.secondary.opacity(0.07)))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Double-tap to save selections", isOn: $prefs.saveGestureEnabled)
+                Text("Saves appear in the panel under the menu bar icon. Turn this off "
+                     + "to make the key plain push-to-talk.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer()
         }
         .padding(20)
+    }
+}
+
+private extension HotkeyTab {
+    func gestureRow(keys: Int, action: String, result: String, enabled: Bool = true) -> some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 3) {
+                ForEach(0..<keys, id: \.self) { _ in
+                    Keycap(text: prefs.hotKey.keycap, size: 13)
+                }
+            }
+            .frame(width: 64, alignment: .leading)
+            Text(action)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 96, alignment: .leading)
+            Text(result)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .opacity(enabled ? 1 : 0.4)
     }
 }
 

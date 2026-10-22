@@ -99,6 +99,18 @@ enum Config {
     /// Ignore accidental key brushes while allowing brief, single-word dictation.
     static let minRecordingSeconds = 0.1
 
+    /// A press of the dictation key shorter than this is a tap, not a hold.
+    /// Live typing is held back for this long so a tap never types anything.
+    static let gestureTapMaxSeconds: TimeInterval = 0.22
+
+    /// How long after a tap a second press still makes a double tap.
+    static let gestureDoubleTapWindowSeconds: TimeInterval = 0.3
+
+    /// Local database holding saved selections and notes.
+    static let savesDatabaseURL: URL = {
+        applicationSupportDirectoryURL.appendingPathComponent("budgie.sqlite")
+    }()
+
     /// Unload a warm model after this long with no use, reclaiming its memory.
     /// Re-warming `mmap`s the GGUF, so it costs only a fraction of a second.
     static let idleTeardownSeconds: TimeInterval = 300

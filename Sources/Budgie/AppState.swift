@@ -1,7 +1,7 @@
 import AppKit
 import Combine
 
-/// What the app is doing right now — drives both the menu bar icon and the popover.
+/// What the app is doing right now — drives the menu bar icon and the panel's status pill.
 enum DictationState: Equatable {
     case idle
     case recording
@@ -66,7 +66,7 @@ struct MeetingLevels: Equatable {
     let them: Float
 }
 
-/// One finished dictation, kept for the popover's "Recent" list.
+/// One finished dictation, kept so "Paste Last Dictation" can re-deliver it.
 struct Transcription: Identifiable, Codable {
     var id = UUID()
     let text: String
@@ -74,7 +74,7 @@ struct Transcription: Identifiable, Codable {
 }
 
 /// Observable state shared between the AppKit controller and the SwiftUI views.
-/// The `AppDelegate` mutates it; `PopoverView` and `PreferencesView` observe it.
+/// The `AppDelegate` mutates it; the Saved panel and `PreferencesView` observe it.
 final class AppState: ObservableObject {
     @Published var dictation: DictationState = .idle
     /// Live microphone level, 0...1, while recording.

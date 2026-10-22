@@ -2,7 +2,7 @@ import AppKit
 
 /// Renders the menu bar icon. Unlike a static glyph, the icon is a small live
 /// instrument: it shows mic level while recording and animates while working,
-/// so the app communicates state without the user opening the popover.
+/// so the app communicates state without the user opening the panel.
 enum MenuBarIcon {
     private static let size = NSSize(width: 18, height: 18)
 
@@ -31,7 +31,7 @@ enum MenuBarIcon {
     /// one generic songbird glyph, which reads as mush — so the bird is composed
     /// from a few overlapping solid shapes (round head, hooked beak, plump body,
     /// long swept tail) that the system tints as a template. Used for the menu
-    /// bar, the popover header and the About panel, so the app shows one bird.
+    /// bar, the Saved panel and HUDs, and the About panel, so the app shows one bird.
     static func budgie(size: NSSize) -> NSImage {
         let img = NSImage(size: size, flipped: false) { rect in
             let s = rect.width / 18.0          // design canvas is 18 units

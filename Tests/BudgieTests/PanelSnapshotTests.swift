@@ -3,13 +3,13 @@ import SwiftUI
 import XCTest
 @testable import Budgie
 
-/// Renders the popover in each state to PNGs for design review:
-/// BUDGIE_RENDER_POPOVER=/some/dir swift test --filter PopoverSnapshotTests
+/// Renders the Saved panel in each meeting state to PNGs for design review:
+/// BUDGIE_RENDER_POPOVER=/some/dir swift test --filter PanelSnapshotTests
 @MainActor
-final class PopoverSnapshotTests: XCTestCase {
-    func testRenderPopoverStates() throws {
+final class PanelSnapshotTests: XCTestCase {
+    func testRenderPanelStates() throws {
         guard let output = ProcessInfo.processInfo.environment["BUDGIE_RENDER_POPOVER"] else {
-            throw XCTSkip("Set BUDGIE_RENDER_POPOVER to a directory to render the popover")
+            throw XCTSkip("Set BUDGIE_RENDER_POPOVER to a directory to render the panel")
         }
         let directory = URL(fileURLWithPath: output, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -37,6 +37,7 @@ final class PopoverSnapshotTests: XCTestCase {
         }
 
         let states: [(String, (AppState) -> Void)] = [
+            ("saved", { _ in }),
             ("idle", { _ in }),
             ("recording", { s in
                 s.meeting = .recording(started: now.addingTimeInterval(-754))
@@ -86,17 +87,10 @@ final class PopoverSnapshotTests: XCTestCase {
                 state.wordsToday = 412
                 state.recordingSecondsToday = 140
                 configure(state)
-                let view = PopoverView(
-                    state: state, prefs: UserPrefs.shared,
-                    meetingActions: MeetingActions(
-                        start: {}, stop: {}, transcribe: { _ in }, open: { _ in },
-                        copy: { _ in }, reveal: { _ in }, openFolder: {}
-                    ),
-                    onOpenSettings: {}, onCheckForUpdates: {}, onInstallUpdate: {}, onQuit: {}
-                )
+                let view = panel(state: state, tab: name == "saved" ? .saved : .meetings)
                 let suffix = appearance == .aqua ? "light" : "dark"
-                try render(view, appearance: appearance,
-                           to: directory.appendingPathComponent("popover-\(name)-\(suffix).png"))
+                try render(view, size: panelSize, appearance: appearance,
+                           to: directory.appendingPathComponent("panel-\(name)-\(suffix).png"))
             }
         }
     }
@@ -128,14 +122,20 @@ final class PopoverSnapshotTests: XCTestCase {
                    to: URL(fileURLWithPath: output).appendingPathComponent("settings-meetings.png"))
     }
 
-    /// The popover is as tall as its content, so render at its fitting size.
-    private func render(_ view: PopoverView, appearance: NSAppearance.Name, to url: URL) throws {
-        let probe = NSHostingView(rootView: view)
-        probe.appearance = NSAppearance(named: appearance)
-        // Two passes: the timeline measures its rows, then sizes itself.
-        _ = probe.fittingSize
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        try render(view, size: probe.fittingSize, appearance: appearance, to: url)
+    private let panelSize = NSSize(width: 320, height: 640)
+
+    private func panel(state: AppState, tab: SavedListModel.Tab) -> SavedPanelView {
+        let store = SaveStore(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("BudgieSnapshot-\(UUID().uuidString).sqlite"))
+        store.add(text: "Keep the core configuration declarative, with an optional TypeScript escape hatch.",
+                  kind: .capture, why: "for the config RFC",
+                  source: SaveSource(appName: "Claude", windowTitle: "Compare configuration formats"))
+        store.add(text: "Ask design about the onboarding pass", kind: .note)
+        let coordinator = SaveCoordinator(store: store, prefs: UserPrefs.shared)
+        let model = SavedListModel(store: store, coordinator: coordinator, state: state, prefs: UserPrefs.shared)
+        model.tab = tab
+        return SavedPanelView(model: model, store: store, coordinator: coordinator,
+                              state: state, prefs: UserPrefs.shared)
     }
 
     private func render<V: View>(_ view: V, size: NSSize, appearance: NSAppearance.Name, to url: URL) throws {

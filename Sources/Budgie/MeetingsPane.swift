@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// What the popover can ask the app to do with meetings.
+/// What the Meetings tab can ask the app to do with meetings.
 struct MeetingActions {
     var start: () -> Void
     var stop: () -> Void
@@ -11,106 +11,31 @@ struct MeetingActions {
     var openFolder: () -> Void
 }
 
-/// The menu bar dropdown — a SwiftUI popover, not a plain `NSMenu`. A header
-/// with the Record button, the live meeting while one records, one timeline of
-/// meetings and dictations, and a footer for push-to-talk and the app menu.
-/// It is as tall as its content; the timeline scrolls past `maxTimelineHeight`.
-struct PopoverView: View {
-    static let width: CGFloat = 340
-    static let maxTimelineHeight: CGFloat = 380
-    /// While recording, the live meeting takes the room.
-    static let maxTimelineHeightWhileRecording: CGFloat = 170
-
+/// The Saved panel's Meetings tab: Record Meeting, the live meeting while
+/// one records, and past meetings by day.
+struct MeetingsPane: View {
     @ObservedObject var state: AppState
     @ObservedObject var prefs: UserPrefs
-    var meetingActions: MeetingActions
-    var onOpenSettings: () -> Void
-    var onCheckForUpdates: () -> Void
-    var onInstallUpdate: () -> Void
-    var onQuit: () -> Void
+    let actions: MeetingActions
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            // Restarting would end a meeting, so the banner waits until it's saved.
-            if let update = state.update, !state.meeting.isBusy {
-                UpdateBanner(update: update, install: onInstallUpdate)
+            if !state.meeting.isBusy {
+                RecordButton(action: actions.start)
+                    .padding(.top, 4)
+                    .padding(.bottom, 10)
             }
-            MeetingStatus(state: state, actions: meetingActions)
-            Divider()
-            Timeline(
-                state: state,
-                prefs: prefs,
-                actions: meetingActions,
-                maxHeight: state.meeting.isRecording
-                    ? Self.maxTimelineHeightWhileRecording : Self.maxTimelineHeight
-            )
-            Divider()
-            footer
+            MeetingStatus(state: state, actions: actions)
+            MeetingList(state: state, prefs: prefs, actions: actions)
         }
-        .frame(width: Self.width)
-        .fixedSize(horizontal: false, vertical: true)
-        // Opaque, so the window behind the popover doesn't show through.
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        HStack(spacing: 7) {
-            Image(nsImage: MenuBarIcon.budgie(size: NSSize(width: 16, height: 16)))
-                .renderingMode(.template)
-                .foregroundStyle(.tint)
-            Text("Budgie")
-                .font(.system(size: 13, weight: .semibold))
-            Spacer()
-            switch state.meeting {
-            case .recording:
-                RecordingBadge()
-            case .processing:
-                EmptyView()
-            case .idle, .failed:
-                RecordButton(action: meetingActions.start)
-            }
-        }
-        .frame(height: 24)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-    }
-
-    // MARK: - Footer
-
-    private var footer: some View {
-        HStack(spacing: 6) {
-            DictationStatus(state: state, prefs: prefs, onOpenSettings: onOpenSettings)
-            Spacer(minLength: 6)
-            Menu {
-                Button("Open Meetings Folder", action: meetingActions.openFolder)
-                Divider()
-                Button("Settings…", action: onOpenSettings)
-                Button("Check for Updates…", action: onCheckForUpdates)
-                Divider()
-                Button("Quit Budgie", action: onQuit)
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Settings, updates and quit")
-        }
-        .font(.system(size: 11.5))
-        .frame(minHeight: 22)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
 // MARK: - Header controls
 
 /// The red "Record" capsule that starts a meeting.
-private struct RecordButton: View {
+struct RecordButton: View {
     let action: () -> Void
 
     var body: some View {
@@ -135,7 +60,7 @@ private struct RecordButton: View {
     }
 }
 
-private struct RecordingBadge: View {
+struct RecordingBadge: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle().fill(.red).frame(width: 7, height: 7)
@@ -159,7 +84,7 @@ private extension View {
 // MARK: - Update banner
 
 /// Shown while an update waits, so it isn't stuck until Budgie next quits.
-private struct UpdateBanner: View {
+struct UpdateBanner: View {
     let update: UpdateStatus
     let install: () -> Void
 
@@ -170,14 +95,18 @@ private struct UpdateBanner: View {
                 .foregroundStyle(.tint)
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
             Spacer(minLength: 4)
             Button(action: install) {
                 Text(buttonTitle)
                     .font(.system(size: 11.5, weight: .semibold))
+                    .lineLimit(1)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 3)
             }
             .buttonStyle(FilledButtonStyle(color: .accentColor, shape: .capsule))
+            .fixedSize()
         }
     }
 
@@ -345,27 +274,27 @@ private struct LiveTranscriptCard: View {
     }
 }
 
-// MARK: - Timeline
+// MARK: - Meeting list
 
-/// Meetings and dictations in one list, newest first, grouped by day.
-private struct Timeline: View {
+/// Past meetings, newest first, grouped by day.
+private struct MeetingList: View {
     @ObservedObject var state: AppState
     @ObservedObject var prefs: UserPrefs
     let actions: MeetingActions
-    let maxHeight: CGFloat
-
-    static let itemLimit = 40
 
     var body: some View {
         if groups.isEmpty {
-            Text("Your meetings and dictations show up here.\nTranscripts are saved to \(prefs.meetingsFolder.abbreviatedPath).")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 28)
-                .padding(.vertical, 22)
+            VStack {
+                Text("Your meetings show up here.\nTranscripts are saved to \(prefs.meetingsFolder.abbreviatedPath).")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 22)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -377,76 +306,32 @@ private struct Timeline: View {
                             .padding(.horizontal, 14)
                             .padding(.top, 9)
                             .padding(.bottom, 2)
-                        ForEach(group.items) { item in
-                            switch item {
-                            case .meeting(let meeting):
-                                MeetingRow(meeting: meeting, isBusy: state.meeting.isBusy, actions: actions)
-                            case .dictation(let dictation):
-                                DictationRow(item: dictation)
-                            }
+                        ForEach(group.meetings, id: \.folder) { meeting in
+                            MeetingRow(meeting: meeting, isBusy: state.meeting.isBusy, actions: actions)
                         }
                     }
                 }
+                .padding(.horizontal, 6)
                 .padding(.bottom, 6)
             }
             .scrollBounceBehavior(.basedOnSize)
-            .frame(maxHeight: maxHeight)
         }
     }
 
-    private var groups: [TimelineGroup] {
+    private var groups: [(title: String, meetings: [MeetingSummary])] {
         let meetings = state.meetings
             .filter { $0.folder != state.activeMeetingFolder }
-            .map(TimelineItem.meeting)
-        let items = (meetings + state.recent.map(TimelineItem.dictation))
-            .sorted { $0.date > $1.date }
-            .prefix(Self.itemLimit)
-        var groups: [TimelineGroup] = []
-        for item in items {
-            let title = Self.dayTitle(item.date)
+            .sorted { $0.started > $1.started }
+        var groups: [(title: String, meetings: [MeetingSummary])] = []
+        for meeting in meetings {
+            let title = SaveFormatting.dayTitle(meeting.started)
             if groups.last?.title == title {
-                groups[groups.count - 1].items.append(item)
+                groups[groups.count - 1].meetings.append(meeting)
             } else {
-                groups.append(TimelineGroup(title: title, items: [item]))
+                groups.append((title, [meeting]))
             }
         }
         return groups
-    }
-
-    static func dayTitle(_ date: Date, now: Date = Date()) -> String {
-        let calendar = Calendar.current
-        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
-        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
-           calendar.isDate(date, inSameDayAs: yesterday) { return "Yesterday" }
-        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date),
-                                           to: calendar.startOfDay(for: now)).day ?? 0
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate(days < 7 ? "EEEE" : "MMMd")
-        return formatter.string(from: date)
-    }
-}
-
-private struct TimelineGroup {
-    let title: String
-    var items: [TimelineItem]
-}
-
-private enum TimelineItem: Identifiable {
-    case meeting(MeetingSummary)
-    case dictation(Transcription)
-
-    var id: String {
-        switch self {
-        case .meeting(let meeting): return "m:" + meeting.folder.path
-        case .dictation(let item):  return "d:" + item.id.uuidString
-        }
-    }
-
-    var date: Date {
-        switch self {
-        case .meeting(let meeting): return meeting.started
-        case .dictation(let item):  return item.date
-        }
     }
 }
 
@@ -539,137 +424,6 @@ private struct MeetingRow: View {
     }
 }
 
-/// One dictation — click to copy it back to the clipboard.
-private struct DictationRow: View {
-    let item: Transcription
-    @State private var copied = false
-
-    var body: some View {
-        Button {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(item.text, forType: .string)
-            copied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: "text.bubble")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 16)
-                Text(item.text)
-                    .font(.system(size: 12))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if copied {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.green)
-                } else {
-                    Text(timeFormatter.string(from: item.date))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize()
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(HoverRowStyle())
-        .help("Click to copy")
-    }
-}
-
-// MARK: - Footer
-
-/// Push-to-talk is always armed, so dictation gets a status line.
-private struct DictationStatus: View {
-    @ObservedObject var state: AppState
-    @ObservedObject var prefs: UserPrefs
-    var onOpenSettings: () -> Void
-
-    var body: some View {
-        HStack(spacing: 5) {
-            switch state.dictation {
-            case .idle:
-                Text("Hold").foregroundStyle(.secondary)
-                Keycap(text: prefs.hotKey.keycap)
-                Text("to dictate").foregroundStyle(.secondary)
-                if state.speedMultiplier >= 1.05 {
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(String(format: "%.1f× typing", state.speedMultiplier))
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.tint)
-                        .help("\(AppState.durationText(state.timeSavedToday)) of typing saved today · \(state.wordsToday) words")
-                }
-            case .recording:
-                Image(systemName: "mic.fill").foregroundStyle(.red)
-                Text("Listening").fontWeight(.medium)
-                if let started = state.recordingStarted {
-                    TimelineView(.periodic(from: started, by: 1)) { _ in
-                        Text(MeetingTranscript.timestamp(Date().timeIntervalSince(started)))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                LevelMeter(level: state.level, height: 7)
-                    .frame(width: 90)
-            case .transcribing:
-                ProgressView().controlSize(.mini)
-                Text("Transcribing…").fontWeight(.medium)
-            case .error(let message):
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(message)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Fix…", action: onOpenSettings)
-                    .controlSize(.small)
-            }
-        }
-    }
-}
-
-// MARK: - Components
-
-/// A keyboard-key styled label.
-private struct Keycap: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold, design: .rounded))
-            .frame(minWidth: 18)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.14)))
-            .overlay(RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1))
-    }
-}
-
-/// An LED-style level meter.
-private struct LevelMeter: View {
-    let level: Float
-    var height: CGFloat = 16
-    private let bars = 18
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<bars, id: \.self) { i in
-                let threshold = Float(i) / Float(bars)
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(threshold < level ? color(threshold)
-                                            : Color.secondary.opacity(0.16))
-                    .frame(height: height)
-            }
-        }
-    }
-
-    private func color(_ t: Float) -> Color {
-        t < 0.6 ? .green : (t < 0.85 ? .yellow : .red)
-    }
-}
-
 private struct RowIconButton: View {
     let systemImage: String
     let help: String
@@ -687,9 +441,9 @@ private struct RowIconButton: View {
     }
 }
 
-/// A solid button that keeps its colour whether or not the popover is the key
+/// A solid button that keeps its colour whether or not the panel is the key
 /// window (`.borderedProminent` greys out in an inactive window).
-private struct FilledButtonStyle: ButtonStyle {
+struct FilledButtonStyle: ButtonStyle {
     enum Shape { case rounded, capsule }
 
     let color: Color
@@ -716,7 +470,7 @@ private struct FilledButtonStyle: ButtonStyle {
 }
 
 /// A borderless button that highlights its whole row on hover.
-private struct HoverRowStyle: ButtonStyle {
+struct HoverRowStyle: ButtonStyle {
     @State private var hovering = false
 
     func makeBody(configuration: Configuration) -> some View {

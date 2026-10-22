@@ -76,6 +76,12 @@ final class StreamingTranscriber: @unchecked Sendable {
     private var runningTranscript = ""
     private var pendingSamples: [Float] = []
     private var converter: AVAudioConverter?
+    /// Main-thread count of sessions begun or cancelled. Partials carry the
+    /// value their session started with and are dropped once it moves on, so
+    /// text from a cancelled session can't leak into the next one.
+    private var mainGeneration = 0
+    /// The generation of the session the engine queue is working on.
+    private var queueGeneration = 0
     private var converterInputFormat: AVAudioFormat?
 
     func warmUp() {
@@ -95,7 +101,10 @@ final class StreamingTranscriber: @unchecked Sendable {
         // session. Doing this outside the serial block prevents a fast audio
         // callback from being enqueued and then erased during cold start.
         pendingBuffers.reset()
+        mainGeneration += 1
+        let generation = mainGeneration
         queue.async {
+            self.queueGeneration = generation
             self.pendingError = nil
             self.runningTranscript = ""
             self.pendingSamples.removeAll(keepingCapacity: true)
@@ -155,6 +164,7 @@ final class StreamingTranscriber: @unchecked Sendable {
     }
 
     func cancelSession() {
+        mainGeneration += 1
         queue.async {
             self.pendingError = nil
             self.runningTranscript = ""
@@ -371,7 +381,11 @@ final class StreamingTranscriber: @unchecked Sendable {
     private func emitPartial(_ partial: String) {
         let text = partial.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        DispatchQueue.main.async { self.onPartial?(text) }
+        let generation = queueGeneration
+        DispatchQueue.main.async {
+            guard generation == self.mainGeneration else { return }
+            self.onPartial?(text)
+        }
     }
 }
 

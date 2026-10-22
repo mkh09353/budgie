@@ -209,11 +209,46 @@ The icon is a small live instrument:
 | animated dots         | transcribing |
 | warning triangle      | permission missing |
 
-Clicking the icon opens a popover with **Record Meeting** (live Me/Them levels
-and a Stop button while recording), a one-line dictation strip with today's
-speed versus typing, and a Meetings / Dictations history: click a meeting to
-open its transcript, or a dictation to copy it. **Settings…** opens a sectioned
-preferences window: General, Hotkey, Meetings, Permissions and About.
+Clicking the icon opens the **Budgie panel**: a floating, non-activating panel
+(it never steals focus or your text selection) with two tabs. **Saved** lists
+everything you've saved (see below); **Meetings** has **Record Meeting** (live
+Me/Them levels, the latest transcribed line and a Stop button while recording)
+and your past meetings: click one to open its transcript. A status pill shows
+whether dictation is ready, listening or working, a banner offers **Restart to
+Update** when an update is waiting, and the footer shows today's speed against
+typing. Pin the panel to keep it open while you work in other apps. The **⋯**
+menu has Paste Last Dictation, Show Done Items, Clear Done, Open Meetings
+Folder, **Settings…** (General, Hotkey, Meetings, Permissions and About),
+updates and Quit.
+
+## Saving selections
+
+The dictation key does three things:
+
+| Gesture | Result |
+|---------|--------|
+| hold            | dictate into the focused app |
+| double-tap      | save the selected text |
+| tap, then hold  | save the selection and dictate *why* — release to attach the note |
+
+The first press always starts the microphone, so dictation stays instant; live
+text is held back for ~0.2 s until the press is clearly a hold. Pressing any
+other key with the dictation key (e.g. right-⌘C) never counts as a tap, and
+Esc while holding cancels a note.
+
+A save records the selected text plus whatever accessibility exposes about its
+source: app, window title, page URL, file path and the text around it. Apps
+that don't expose a selection fall back to a synthetic ⌘C, with the clipboard
+restored afterwards. **Open** returns to the source — on web pages via a
+text-fragment link that scrolls to the exact passage. With nothing selected,
+tap-then-hold saves the spoken note on its own.
+
+In the panel: ↑/↓ to move, ↩ to expand, Space to mark done, ⌘C to copy,
+⇧⌘C to copy as a numbered list (and tick those items off), ⌥⌘C to copy with
+the notes, ⌫ to delete, ⌘F to search. Saves live in
+`~/Library/Application Support/Budgie/budgie.sqlite`; deletes are tombstones
+and ids are UUIDv7 so a sync backend can be added later. Turn the gesture off
+in Settings → Hotkey to make the key plain push-to-talk.
 
 ## Configuration
 
