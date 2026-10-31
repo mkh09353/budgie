@@ -26,7 +26,7 @@ struct PreferencesView: View {
             AboutTab(state: state, onCheckForUpdates: onCheckForUpdates)
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 480, height: 380)
+        .frame(width: 480, height: 460)
     }
 }
 
@@ -134,6 +134,10 @@ private struct GeneralTab: View {
 
 struct MeetingsTab: View {
     @ObservedObject var prefs: UserPrefs
+    /// Audio still sitting in transcribed meetings, e.g. from before
+    /// recordings were deleted automatically. Nil until measured.
+    @State private var oldAudioBytes: Int64?
+    @State private var confirmingDelete = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -155,10 +159,27 @@ struct MeetingsTab: View {
                         NSWorkspace.shared.open(prefs.meetingsFolder)
                     }
                 }
-                Text("Each meeting is a folder holding transcript.md, ready to paste into Claude or Codex, plus transcript.json and the two recordings (me.wav and them.wav).")
+                Text("Each meeting is a folder holding transcript.md, ready to paste into Claude or Codex, plus transcript.json.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Keep audio recordings after transcribing", isOn: $prefs.keepMeetingAudio)
+                Text("Off deletes me.wav and them.wav once the transcript is saved (about 460 MB an hour). A meeting that fails to transcribe always keeps its audio.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let oldAudioBytes, oldAudioBytes > 0 {
+                    HStack(spacing: 8) {
+                        Text("\(Self.byteFormatter.string(fromByteCount: oldAudioBytes)) of audio in transcribed meetings")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Button("Delete…") { confirmingDelete = true }
+                            .controlSize(.small)
+                    }
+                }
             }
 
             Divider()
@@ -186,6 +207,32 @@ struct MeetingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(20)
+        .task(id: prefs.meetingsFolder) { await measureOldAudio() }
+        .alert("Delete the audio of transcribed meetings?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) { deleteOldAudio() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Transcripts are kept. Meetings that haven\u{2019}t been transcribed keep their audio.")
+        }
+    }
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    private func measureOldAudio() async {
+        let root = prefs.meetingsFolder
+        oldAudioBytes = await Task.detached { MeetingLibrary.transcribedAudioSize(in: root) }.value
+    }
+
+    private func deleteOldAudio() {
+        let root = prefs.meetingsFolder
+        Task {
+            await Task.detached { MeetingLibrary.deleteTranscribedAudio(in: root) }.value
+            await measureOldAudio()
+        }
     }
 
     private func chooseFolder() {

@@ -113,6 +113,12 @@ final class UserPrefs: ObservableObject {
     static let defaultMeetingsFolder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Meetings", isDirectory: true)
 
+    /// Keep me.wav and them.wav after a meeting is transcribed. Off by
+    /// default: an hour of meeting audio is ~460 MB, the transcript a few KB.
+    @Published var keepMeetingAudio: Bool {
+        didSet { d.set(keepMeetingAudio, forKey: "keepMeetingAudio") }
+    }
+
     /// Double-tap the dictation key to save the selection; tap then hold to
     /// add a spoken note. Off makes the key plain push-to-talk again.
     @Published var saveGestureEnabled: Bool {
@@ -139,6 +145,7 @@ final class UserPrefs: ObservableObject {
         onboardingCompleted = d.bool(forKey: "onboardingCompleted")
         meetingsFolder = d.string(forKey: "meetingsFolder")
             .map { URL(fileURLWithPath: $0, isDirectory: true) } ?? Self.defaultMeetingsFolder
+        keepMeetingAudio = d.bool(forKey: "keepMeetingAudio")
         saveGestureEnabled = d.object(forKey: "saveGestureEnabled") as? Bool ?? true
         panelPinned = d.bool(forKey: "panelPinned")
         showDoneItems = d.object(forKey: "showDoneItems") as? Bool ?? true

@@ -422,6 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.async {
                 switch result {
                 case .success:
+                    // Only once the transcript is safely written; a failed
+                    // meeting keeps its audio so it can be transcribed again.
+                    if !self.prefs.keepMeetingAudio { MeetingLibrary.deleteAudio(in: folder) }
                     self.state.meeting = .idle
                     if self.prefs.playSounds { NSSound(named: "Glass")?.play() }
                 case .failure(let error):

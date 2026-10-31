@@ -16,9 +16,13 @@ Parakeet TDT 0.6b v3, 213 MB), downloading it on first use.
 call app works and no bot joins; macOS 14.2+). Both are transcribed on-device
 with parakeet-redux a minute at a time while you talk, so when you stop, Budgie
 only finishes the last minute and writes one merged, timestamped
-`transcript.md` (plus `transcript.json` and the two WAVs) into
-`~/Meetings/<date-time>/`, ready to hand to Claude or Codex. Words the mic picks
-up from your speakers are removed from "Me".
+`transcript.md` (plus `transcript.json`) into `~/Meetings/<date-time>/`, ready
+to hand to Claude or Codex. Words the mic picks up from your speakers are
+removed from "Me". The raw audio (`me.wav` and `them.wav`, ~460 MB an hour) is
+deleted once the transcript is saved; turn on **Keep audio recordings after
+transcribing** in Settings → Meetings to keep it. A meeting that fails to
+transcribe always keeps its audio, and Settings can clear audio left in older
+transcribed meetings.
 
 ## Building from source
 

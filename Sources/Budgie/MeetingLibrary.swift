@@ -43,7 +43,8 @@ enum MeetingStage: Equatable {
 
 /// Meeting folders on disk: `<root>/2026-10-07-1430/` holding `me.wav`,
 /// `them.wav`, `meeting.json` and, once transcribed, `transcript.md` and
-/// `transcript.json`. Plain files, so Claude, Codex or anything else can read
+/// `transcript.json`. The WAVs are deleted after transcription unless the
+/// user keeps them. Plain files, so Claude, Codex or anything else can read
 /// a meeting straight from the folder.
 enum MeetingLibrary {
     static let infoFileName = "meeting.json"
@@ -139,6 +140,51 @@ enum MeetingLibrary {
         updated.preview = transcript.lines.first?.text ?? "No speech detected"
         try writeInfo(updated, to: folder)
         return transcript
+    }
+
+    static let audioFileNames = [MeetingRecorder.meFileName, MeetingRecorder.themFileName]
+
+    /// Deletes a meeting's two WAVs, keeping the transcript and meeting.json.
+    /// Returns the bytes freed.
+    @discardableResult
+    static func deleteAudio(in folder: URL) -> Int64 {
+        var freed: Int64 = 0
+        for name in audioFileNames {
+            let url = folder.appendingPathComponent(name)
+            let size = fileSize(of: url)
+            if (try? FileManager.default.removeItem(at: url)) != nil { freed += size }
+        }
+        return freed
+    }
+
+    /// Bytes of audio held by meetings in `root` that already have a
+    /// transcript. Meetings still waiting to be transcribed aren't counted.
+    static func transcribedAudioSize(in root: URL) -> Int64 {
+        transcribedFolders(in: root).reduce(0) { total, folder in
+            total + audioFileNames.reduce(0) { $0 + fileSize(of: folder.appendingPathComponent($1)) }
+        }
+    }
+
+    /// Deletes the audio of every transcribed meeting in `root`. Returns the
+    /// bytes freed.
+    @discardableResult
+    static func deleteTranscribedAudio(in root: URL) -> Int64 {
+        transcribedFolders(in: root).reduce(0) { $0 + deleteAudio(in: $1) }
+    }
+
+    private static func transcribedFolders(in root: URL) -> [URL] {
+        let folders = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+        return folders.filter {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent(infoFileName).path)
+                && FileManager.default.fileExists(atPath: $0.appendingPathComponent(transcriptFileName).path)
+        }
+    }
+
+    private static func fileSize(of url: URL) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
     private static func words(in wav: URL, engine: StandardTranscriber) throws -> [TranscriptWord] {

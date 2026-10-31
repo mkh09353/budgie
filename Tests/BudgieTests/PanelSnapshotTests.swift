@@ -116,8 +116,8 @@ final class PanelSnapshotTests: XCTestCase {
         guard let output = ProcessInfo.processInfo.environment["BUDGIE_RENDER_POPOVER"] else {
             throw XCTSkip("Set BUDGIE_RENDER_POPOVER to a directory to render the settings tab")
         }
-        // The Settings window is 480x380; its tab bar takes about 50 pt.
-        try render(MeetingsTab(prefs: UserPrefs.shared), size: NSSize(width: 480, height: 330),
+        // The Settings window is 480x460; its tab bar takes about 50 pt.
+        try render(MeetingsTab(prefs: UserPrefs.shared), size: NSSize(width: 480, height: 410),
                    appearance: .aqua,
                    to: URL(fileURLWithPath: output).appendingPathComponent("settings-meetings.png"))
     }
