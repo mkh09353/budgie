@@ -67,7 +67,7 @@ final class SaveStore: ObservableObject {
                 )
                 opened = try SQLiteDatabase(path: url.path)
             } catch {
-                NSLog("Budgie: could not open saves database: \(error)")
+                Log.error(.saves, "could not open saves database: \(error)")
             }
         }
         // `try!` is safe: an in-memory database cannot fail to open.
@@ -75,7 +75,7 @@ final class SaveStore: ObservableObject {
         do {
             try migrate()
         } catch {
-            NSLog("Budgie: saves database migration failed: \(error)")
+            Log.error(.saves, "saves database migration failed: \(error)")
         }
         reload()
     }
@@ -117,7 +117,7 @@ final class SaveStore: ObservableObject {
                 )
             }
         } catch {
-            NSLog("Budgie: could not load saves: \(error)")
+            Log.error(.saves, "could not load saves: \(error)")
         }
     }
 
@@ -212,7 +212,7 @@ final class SaveStore: ObservableObject {
         do {
             try db.run(sql, values)
         } catch {
-            NSLog("Budgie: saves write failed: \(error)")
+            Log.error(.saves, "saves write failed: \(error)")
         }
         reload()
     }
@@ -228,7 +228,7 @@ final class SaveStore: ObservableObject {
                 throw error
             }
         } catch {
-            NSLog("Budgie: saves transaction failed: \(error)")
+            Log.error(.saves, "saves transaction failed: \(error)")
         }
         reload()
     }

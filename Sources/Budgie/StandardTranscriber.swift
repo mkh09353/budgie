@@ -29,9 +29,9 @@ final class StandardTranscriber: @unchecked Sendable {
                 guard FileManager.default.fileExists(atPath: url.path) else { continue }
                 do {
                     try FileManager.default.removeItem(at: url)
-                    NSLog("Budgie: removed legacy model \(name)")
+                    Log.info(.engine, "removed legacy model \(name)")
                 } catch {
-                    NSLog("Budgie: could not remove legacy model \(name): \(error)")
+                    Log.error(.engine, "could not remove legacy model \(name): \(error)")
                 }
             }
         }
@@ -44,7 +44,7 @@ final class StandardTranscriber: @unchecked Sendable {
                 try self.ensureLoaded()
             } catch {
                 self.setWarm(false)
-                NSLog("Budgie: standard warm-up failed: \(error)")
+                Log.error(.engine, "Punctuated warm-up failed: \(error)")
             }
             self.scheduleIdleShutdown()
         }
@@ -58,7 +58,7 @@ final class StandardTranscriber: @unchecked Sendable {
                 DispatchQueue.main.async { completion(.success(())) }
             } catch {
                 self.setWarm(false)
-                NSLog("Budgie: punctuated model preparation failed: \(error)")
+                Log.error(.engine, "Punctuated model preparation failed: \(error)")
                 DispatchQueue.main.async { completion(.failure(error)) }
             }
         }
@@ -89,7 +89,7 @@ final class StandardTranscriber: @unchecked Sendable {
                 }
                 result = .success(try body(context))
             } catch {
-                NSLog("Budgie: standard transcription failed: \(error)")
+                Log.error(.engine, "Punctuated transcription failed: \(error)")
                 result = .failure(error)
             }
         }
@@ -127,11 +127,14 @@ final class StandardTranscriber: @unchecked Sendable {
 
         let modelPath = try ensureModelAvailable()
 
+        let started = Log.uptime
         let library = try ParakeetLibrary(path: libraryPath)
         let context = try ParakeetContext(library: library, modelPath: modelPath)
         self.library = library
         self.context = context
         loaded = true
+        Log.info(.engine, "Punctuated model loaded in \(Log.ms(Log.uptime - started)), "
+            + "\(library.threadDescription)")
         setWarm(true)
     }
 
@@ -160,7 +163,7 @@ final class StandardTranscriber: @unchecked Sendable {
         }
 
         try? fileManager.removeItem(at: temporary)
-        NSLog("Budgie: downloading standard model to \(destination.path)")
+        Log.info(.engine, "downloading Punctuated model to \(destination.path)")
 
         let semaphore = DispatchSemaphore(value: 0)
         var result: Result<String, Error>?
@@ -211,7 +214,7 @@ final class StandardTranscriber: @unchecked Sendable {
         }
 
         let path = try result.get()
-        NSLog("Budgie: standard model ready at \(path)")
+        Log.info(.engine, "Punctuated model ready at \(path)")
         return path
     }
 
@@ -232,6 +235,7 @@ final class StandardTranscriber: @unchecked Sendable {
             self.idleTimer = Timer.scheduledTimer(
                 withTimeInterval: Config.idleTeardownSeconds, repeats: false
             ) { [weak self] _ in
+                Log.info(.engine, "Punctuated model unloaded after idling; the next dictation reloads it")
                 self?.shutdown()
             }
         }

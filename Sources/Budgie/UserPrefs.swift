@@ -128,6 +128,14 @@ final class UserPrefs: ObservableObject {
     @Published var panelPinned: Bool {
         didSet { d.set(panelPinned, forKey: "panelPinned") }
     }
+    /// Keeps per-step timings in the log file, and watches for a blocked main
+    /// thread. Slow starts and errors are logged either way. See `Log`.
+    @Published var diagnosticLogging: Bool {
+        didSet {
+            d.set(diagnosticLogging, forKey: "diagnosticLogging")
+            Log.verbose = diagnosticLogging
+        }
+    }
     /// Checked-off saves stay visible (struck through) until cleared.
     @Published var showDoneItems: Bool {
         didSet { d.set(showDoneItems, forKey: "showDoneItems") }
@@ -149,6 +157,8 @@ final class UserPrefs: ObservableObject {
         saveGestureEnabled = d.object(forKey: "saveGestureEnabled") as? Bool ?? true
         panelPinned = d.bool(forKey: "panelPinned")
         showDoneItems = d.object(forKey: "showDoneItems") as? Bool ?? true
+        diagnosticLogging = d.bool(forKey: "diagnosticLogging")
+        Log.verbose = diagnosticLogging
     }
 
     private func applyLaunchAtLogin() {
@@ -159,7 +169,7 @@ final class UserPrefs: ObservableObject {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            NSLog("Budgie: launch-at-login toggle failed: \(error)")
+            Log.error(.app, "launch-at-login toggle failed: \(error)")
         }
     }
 }

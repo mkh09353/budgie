@@ -23,7 +23,7 @@ struct PreferencesView: View {
                 .tabItem { Label("Meetings", systemImage: "record.circle") }
             PermissionsTab(state: state, onRunSetup: onRunSetup)
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
-            AboutTab(state: state, onCheckForUpdates: onCheckForUpdates)
+            AboutTab(state: state, prefs: prefs, onCheckForUpdates: onCheckForUpdates)
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 480, height: 460)
@@ -382,8 +382,9 @@ private struct PermissionRow: View {
 
 // MARK: - About
 
-private struct AboutTab: View {
+struct AboutTab: View {
     @ObservedObject var state: AppState
+    @ObservedObject var prefs: UserPrefs
     var onCheckForUpdates: () -> Void
 
     private var version: String {
@@ -412,6 +413,32 @@ private struct AboutTab: View {
                 lifetimeStat(AppState.durationText(state.timeSavedAllTime), "of typing avoided")
             }
             .padding(.top, 10)
+
+            Spacer(minLength: 0)
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Toggle("Diagnostic logging", isOn: $prefs.diagnosticLogging)
+                        .disabled(Log.forcedByEnvironment)
+                    Spacer()
+                    Button("Show Log") {
+                        Log.flush()
+                        if FileManager.default.fileExists(atPath: Log.fileURL.path) {
+                            NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL])
+                        } else {
+                            try? FileManager.default.createDirectory(
+                                at: Log.directoryURL, withIntermediateDirectories: true
+                            )
+                            NSWorkspace.shared.open(Log.directoryURL)
+                        }
+                    }
+                }
+                Text("Records step-by-step timings, like how long the mic took to open, in ~/Library/Logs/Budgie/budgie.log. Slow starts and errors are logged either way. Never includes what you say.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 6)
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

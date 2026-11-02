@@ -122,6 +122,15 @@ final class PanelSnapshotTests: XCTestCase {
                    to: URL(fileURLWithPath: output).appendingPathComponent("settings-meetings.png"))
     }
 
+    func testRenderAboutSettings() throws {
+        guard let output = ProcessInfo.processInfo.environment["BUDGIE_RENDER_POPOVER"] else {
+            throw XCTSkip("Set BUDGIE_RENDER_POPOVER to a directory to render the settings tab")
+        }
+        try render(AboutTab(state: AppState(), prefs: UserPrefs.shared, onCheckForUpdates: {}),
+                   size: NSSize(width: 480, height: 410), appearance: .aqua,
+                   to: URL(fileURLWithPath: output).appendingPathComponent("settings-about.png"))
+    }
+
     private let panelSize = NSSize(width: 320, height: 640)
 
     private func panel(state: AppState, tab: SavedListModel.Tab) -> SavedPanelView {

@@ -264,6 +264,30 @@ in Settings → Hotkey to make the key plain push-to-talk.
 bundle -- e.g. via `swift run` during development -- it can also use matching
 files in the repo's `models/` directory.
 
+## Logging
+
+Budgie logs to `~/Library/Logs/Budgie/budgie.log` (rolled over to
+`budgie.old.log` at 2 MB) and to the unified log under the subsystem
+`com.maxheadley.budgie`. Errors, warnings and any dictation that took more
+than 0.5 s from key press to hearing audio are always logged. A slow start
+line breaks the time down: how late the main thread handled the key press,
+when the mic was ready, first audio, first live text, whether the engine was
+warm, and the input device with each mic step (`inputNode`, `installTap`,
+`engine.start`).
+
+**Diagnostic logging** (Settings → About) adds the timings of every dictation,
+gesture decisions, engine session start-up and a watchdog that reports any
+time the main thread is blocked for more than 250 ms. Turn it on with any of:
+
+```sh
+defaults write com.maxheadley.budgie diagnosticLogging -bool true   # persists
+BUDGIE_DEBUG_LOG=1 ./Budgie.app/Contents/MacOS/Budgie                 # one run
+```
+
+Then follow it with `tail -f ~/Library/Logs/Budgie/budgie.log`, or
+`/usr/bin/log stream --level debug --predicate 'subsystem == "com.maxheadley.budgie"'`.
+Nothing the user says, types or saves is ever logged.
+
 ## Notes
 
 - The selected engine loads its model once and keeps it resident, so each

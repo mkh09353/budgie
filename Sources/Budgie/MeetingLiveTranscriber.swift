@@ -163,7 +163,7 @@ final class MeetingLiveTranscriber {
                 TranscriptWord(w: $0.w, start: $0.start + chunk.offset, end: $0.end + chunk.offset)
             }
         } catch {
-            NSLog("Budgie: meeting chunk at \(chunk.offset)s failed: \(error)")
+            Log.error(.meeting, "meeting chunk at \(chunk.offset)s failed: \(error)")
             failure = error
         }
     }

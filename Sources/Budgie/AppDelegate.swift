@@ -49,11 +49,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let workQueue = DispatchQueue(label: "com.maxheadley.budgie.work")
     private var cancellables = Set<AnyCancellable>()
 
+    /// The latest dictation-key press: its event timestamp, and when the main
+    /// thread handled it. Recording only ever starts from a press.
+    private var lastPress: (pressed: TimeInterval, handled: TimeInterval)?
+    /// Timings of the dictation being recorded, logged when it stops.
+    private var startTrace: DictationStartTrace?
+    private let watchdog = MainThreadWatchdog()
+
     /// Drives the three-dot transcribing animation.
     private var transcribePhase = 0
     private var transcribeTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let launchStarted = Log.uptime
+        let info = Bundle.main.infoDictionary
+        Log.info(.app, "Budgie \(info?["CFBundleShortVersionString"] as? String ?? "dev") "
+            + "(\(info?["CFBundleVersion"] as? String ?? "?")) launching on macOS "
+            + "\(ProcessInfo.processInfo.operatingSystemVersionString), "
+            + "\(ProcessInfo.processInfo.activeProcessorCount) cores, "
+            + "\(prefs.transcriptionMode.label) mode, diagnostic logging \(Log.verbose ? "on" : "off")")
         _ = updaterController
         buildStatusItem()
         buildPanel()
@@ -67,9 +81,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.state.engineWarm = warm
         }
         streamingEngine.onPartial = { [weak self] partial in
-            self?.applyStreamingTranscript(partial)
+            guard let self else { return }
+            if self.startTrace != nil, self.startTrace?.firstText == nil {
+                self.startTrace?.firstText = Log.uptime
+            }
+            self.applyStreamingTranscript(partial)
         }
         recorder.onLevel = { [weak self] level in self?.state.level = level }
+        recorder.onFirstBuffer = { [weak self] heard in
+            guard let self, self.startTrace != nil, self.startTrace?.firstAudio == nil else { return }
+            self.startTrace?.firstAudio = heard
+        }
         meetingRecorder.onLevels = { [weak self] me, them in
             self?.state.recordMeetingLevels(me: me, them: them)
         }
@@ -131,6 +153,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .sink { [weak self] mode in self?.activateSelectedEngine(mode) }
             .store(in: &cancellables)
 
+        prefs.$diagnosticLogging
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] on in self?.watchdog.setRunning(on || Log.forcedByEnvironment) }
+            .store(in: &cancellables)
+
         // The menu bar label is opt-in and can be toggled live.
         prefs.$showLabel
             .receive(on: DispatchQueue.main)
@@ -153,6 +180,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !prefs.onboardingCompleted || !state.allPermissionsGranted {
             openOnboarding()
         }
+        Log.info(.app, "launched in \(Log.ms(Log.uptime - launchStarted)); "
+            + "key monitor \(keyMonitor == nil ? "NOT running" : "running"), "
+            + "input \(AudioRecorder.defaultInputDescription())")
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -346,7 +376,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             reloadMeetings()
         } catch {
-            NSLog("Budgie: could not start meeting: \(error)")
+            Log.error(.meeting, "could not start meeting: \(error)")
             state.meeting = .failed("Could not start recording: \(error.localizedDescription)", folder: nil)
         }
     }
@@ -400,7 +430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     return try MeetingLibrary.save(folder: folder, me: words.me, them: words.them)
                 }
             case .failure(let error):
-                NSLog("Budgie: live meeting transcription failed, retrying from the files: \(error)")
+                Log.warning(.meeting, "live meeting transcription failed, retrying from the files: \(error)")
                 self.runMeetingJob(folder: folder) { engine, progress in
                     try MeetingLibrary.transcribe(folder: folder, engine: engine, progress: progress)
                 }
@@ -428,7 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self.state.meeting = .idle
                     if self.prefs.playSounds { NSSound(named: "Glass")?.play() }
                 case .failure(let error):
-                    NSLog("Budgie: meeting transcription failed: \(error)")
+                    Log.error(.meeting, "meeting transcription failed: \(error)")
                     self.state.meeting = .failed(self.meetingErrorMessage(error), folder: folder)
                 }
                 self.state.activeMeetingFolder = nil
@@ -553,10 +583,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             flag: hotKey.flag,
             onPress: { [weak self] time in
                 guard let self else { return }
+                let handled = Log.uptime
+                self.lastPress = (time, handled)
+                // The press waited this long for the main thread.
+                if handled - time > 0.15 {
+                    Log.warning(.dictation, "key press handled \(Log.ms(handled - time)) late; the main thread was busy")
+                } else {
+                    Log.debug(.dictation, "key down (handled after \(Log.ms(handled - time)))")
+                }
                 self.perform(self.gesture.press(at: time))
             },
             onRelease: { [weak self] time in
                 guard let self else { return }
+                Log.debug(.dictation, "key up")
                 self.perform(self.gesture.release(at: time))
             },
             onOtherKey: { [weak self] keyCode, time in
@@ -673,6 +712,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Carries out what the gesture recognizer decided, then re-arms its timer.
     private func perform(_ actions: [HotKeyGesture.Action]) {
+        if !actions.isEmpty {
+            Log.debug(.dictation, "gesture: \(actions.map { "\($0)" }.joined(separator: ", "))")
+        }
         for action in actions {
             switch action {
             case .beginDictation:
@@ -771,7 +813,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func startRecording(target: DictationTarget, holdTyping: Bool) {
-        guard !busy, recordingMode == nil else { return }
+        guard !busy, recordingMode == nil else {
+            // The press does nothing, which looks like dictation not starting.
+            Log.warning(.dictation, busy
+                ? "press ignored: the previous dictation is still transcribing"
+                : "press ignored: already recording")
+            return
+        }
+        let press = lastPress ?? (Log.uptime, Log.uptime)
+        startTrace = DictationStartTrace(pressed: press.pressed, handled: press.handled,
+                                         engineWarm: state.engineWarm)
         let mode = prefs.transcriptionMode
         recordingMode = mode
         dictationTarget = target
@@ -788,6 +839,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             recorder.onBuffer = nil
         }
         recorder.start()
+        startTrace?.micReady = Log.uptime
+        startTrace?.mic = recorder.lastStartTiming
         state.recordingStarted = Date()
         state.dictation = .recording
     }
@@ -810,6 +863,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         recordingMode = nil
         let wav = recorder.stop(shouldWriteWav: mode == .standard)
         recorder.onBuffer = nil
+        if let trace = startTrace {
+            startTrace = nil
+            let line = "dictation start (\(mode.label), held \(Log.ms(duration))): \(trace.summary)"
+            if trace.isSlow {
+                Log.warning(.dictation, "SLOW " + line + ", thermal state \(ProcessInfo.processInfo.thermalState.logName)"
+                    + (ProcessInfo.processInfo.isLowPowerModeEnabled ? ", Low Power Mode" : ""))
+            } else {
+                Log.debug(.dictation, line)
+            }
+        }
         if case .recording = state.dictation { state.dictation = .idle }
         return Take(mode: mode, wav: wav, duration: duration)
     }
@@ -827,6 +890,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// `ticket` is the save a `.note` transcript belongs to.
     private func transcribe(_ take: Take, target: DictationTarget, ticket: SaveTicket? = nil) {
         guard !busy else {
+            Log.warning(.dictation, "recording dropped: the previous dictation is still transcribing")
             discard(take)
             if target == .note { saveCoordinator.finishNote(ticket, text: nil) }
             return
@@ -859,19 +923,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         text = try self.engine.transcribe(wav)
                     }
                 } catch {
-                    NSLog("Budgie: standard transcription failed: \(error)")
+                    Log.error(.dictation, "Punctuated transcription failed: \(error)")
                     errorMessage = self.standardErrorMessage(error)
                 }
             case .streaming:
                 do {
                     text = try self.streamingEngine.finish()
                 } catch {
-                    NSLog("Budgie: streaming transcription failed: \(error)")
+                    Log.error(.dictation, "Live transcription failed: \(error)")
                     errorMessage = self.streamingErrorMessage(error)
                 }
             }
             if let wav { try? FileManager.default.removeItem(at: wav) }
             let latency = Date().timeIntervalSince(startedAt)
+            Log.debug(.dictation, "\(mode.label) transcript ready \(Log.ms(latency)) after release"
+                + (errorMessage == nil ? "" : " (failed)"))
 
             DispatchQueue.main.async {
                 self.busy = false
@@ -1044,7 +1110,7 @@ extension AppDelegate: SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
         willInstallUpdateOnQuit item: SUAppcastItem,
         immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
     ) -> Bool {
-        NSLog("Budgie: update \(item.displayVersionString) downloaded, waiting for restart")
+        Log.info(.update, "update \(item.displayVersionString) downloaded, waiting for restart")
         installUpdate = immediateInstallHandler
         state.update = .ready(version: item.displayVersionString)
         return true
@@ -1068,11 +1134,23 @@ extension AppDelegate: SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
         _ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState
     ) {
         guard !handleShowingUpdate else { return }
-        NSLog("Budgie: update \(update.displayVersionString) available")
+        Log.info(.update, "update \(update.displayVersionString) available")
         self.state.update = .available(version: update.displayVersionString)
     }
 
     func standardUserDriverWillFinishUpdateSession() {
         if case .available = state.update { state.update = nil }
+    }
+}
+
+private extension ProcessInfo.ThermalState {
+    var logName: String {
+        switch self {
+        case .nominal:  return "nominal"
+        case .fair:     return "fair"
+        case .serious:  return "SERIOUS"
+        case .critical: return "CRITICAL"
+        @unknown default: return "unknown"
+        }
     }
 }

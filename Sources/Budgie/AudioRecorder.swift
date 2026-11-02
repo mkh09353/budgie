@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 
 /// Captures microphone audio while the key is held, then writes it out as a
 /// 16 kHz mono 16-bit WAV for the Punctuated engine to transcribe.
@@ -7,6 +8,11 @@ final class AudioRecorder {
     var onLevel: ((Float) -> Void)?
     /// Called from the audio tap with each captured buffer.
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+    /// Called on the main thread, once per recording, with the uptime at
+    /// which the first buffer arrived.
+    var onFirstBuffer: ((TimeInterval) -> Void)?
+    /// How long the last `start()` took, step by step.
+    private(set) var lastStartTiming = MicStartTiming()
 
     private let engine = AVAudioEngine()
     private let lock = NSCondition()
@@ -14,6 +20,22 @@ final class AudioRecorder {
     private var inputFormat: AVAudioFormat?
     private var recording = false
     private var activeCallbacks = 0
+    private var heardFirstBuffer = false
+    private var configurationObserver: NSObjectProtocol?
+
+    init() {
+        // An input switch (AirPods connecting, a USB mic unplugged) makes the
+        // next start reopen a different device, often slowly.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { _ in
+            Log.info(.audio, "audio configuration changed; input is now \(Self.defaultInputDescription())")
+        }
+    }
+
+    deinit {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+    }
 
     func start() {
         lock.lock()
@@ -23,12 +45,28 @@ final class AudioRecorder {
         }
         buffers.removeAll()
         recording = true
+        heardFirstBuffer = false
         lock.unlock()
+
+        var timing = MicStartTiming()
+        var stepStart = Log.uptime
+        func step() -> TimeInterval {
+            let now = Log.uptime
+            defer { stepStart = now }
+            return now - stepStart
+        }
+        defer {
+            timing.device = Self.defaultInputDescription()
+            lastStartTiming = timing
+            Log.debug(.audio, "mic started: \(timing.summary)")
+        }
 
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)
+        timing.inputNode = step()
+        timing.sampleRate = format.sampleRate
         guard format.sampleRate > 0 else {
-            NSLog("Budgie: no input format — is microphone access granted?")
+            Log.error(.audio, "no input format — is microphone access granted?")
             lock.lock(); recording = false; lock.unlock()
             return
         }
@@ -47,6 +85,11 @@ final class AudioRecorder {
             }
             self.activeCallbacks += 1
             let onBuffer = self.onBuffer
+            if !self.heardFirstBuffer {
+                self.heardFirstBuffer = true
+                let heard = Log.uptime
+                DispatchQueue.main.async { self.onFirstBuffer?(heard) }
+            }
             if onBuffer == nil {
                 self.buffers.append(copy)
             }
@@ -68,10 +111,14 @@ final class AudioRecorder {
             self.lock.unlock()
         }
 
+        timing.installTap = step()
+
         do {
             try engine.start()
+            timing.engineStart = step()
         } catch {
-            NSLog("Budgie: audio engine failed to start: \(error)")
+            timing.engineStart = step()
+            Log.error(.audio, "audio engine failed to start: \(error)")
             lock.lock(); recording = false; lock.unlock()
             input.removeTap(onBus: 0)
             waitForActiveCallbacks()
@@ -129,6 +176,48 @@ final class AudioRecorder {
         DispatchQueue.main.async { self.onLevel?(level) }
     }
 
+    /// The default input's name and transport, e.g. "AirPods Pro (Bluetooth)".
+    /// Bluetooth mics in particular can take a second or more to open.
+    static func defaultInputDescription() -> String {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        ) == noErr, deviceID != 0 else { return "no input device" }
+
+        var name: Unmanaged<CFString>?
+        size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        address.mSelector = kAudioObjectPropertyName
+        let deviceName = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &name) == noErr
+            ? (name?.takeRetainedValue() as String?) ?? "unnamed input"
+            : "unnamed input"
+
+        var transport: UInt32 = 0
+        size = UInt32(MemoryLayout<UInt32>.size)
+        address.mSelector = kAudioDevicePropertyTransportType
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport) == noErr else {
+            return deviceName
+        }
+        let kind: String
+        switch transport {
+        case kAudioDeviceTransportTypeBuiltIn:     kind = "built-in"
+        case kAudioDeviceTransportTypeBluetooth,
+             kAudioDeviceTransportTypeBluetoothLE: kind = "Bluetooth"
+        case kAudioDeviceTransportTypeUSB:         kind = "USB"
+        case kAudioDeviceTransportTypeVirtual:     kind = "virtual"
+        case kAudioDeviceTransportTypeAggregate:   kind = "aggregate"
+        case kAudioDeviceTransportTypeContinuityCaptureWired,
+             kAudioDeviceTransportTypeContinuityCaptureWireless: kind = "Continuity"
+        default:                                   kind = "other"
+        }
+        return "\(deviceName) (\(kind))"
+    }
+
     private func writeWav(from chunks: [AVAudioPCMBuffer]) -> URL? {
         guard let inFmt = inputFormat, !chunks.isEmpty else { return nil }
 
@@ -169,7 +258,7 @@ final class AudioRecorder {
             return combined
         }
         if status == .error {
-            NSLog("Budgie: resample failed: \(String(describing: convError))")
+            Log.error(.audio, "resample failed: \(String(describing: convError))")
             return nil
         }
 
@@ -190,7 +279,7 @@ final class AudioRecorder {
             try file.write(from: outBuf)
             return url
         } catch {
-            NSLog("Budgie: failed to write WAV: \(error)")
+            Log.error(.audio, "failed to write WAV: \(error)")
             return nil
         }
     }

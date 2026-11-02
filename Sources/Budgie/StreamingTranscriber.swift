@@ -91,7 +91,7 @@ final class StreamingTranscriber: @unchecked Sendable {
             } catch {
                 self.pendingError = error
                 self.setWarm(false)
-                NSLog("Budgie: streaming warm-up failed: \(error)")
+                Log.error(.engine, "Live warm-up failed: \(error)")
             }
         }
     }
@@ -103,20 +103,35 @@ final class StreamingTranscriber: @unchecked Sendable {
         pendingBuffers.reset()
         mainGeneration += 1
         let generation = mainGeneration
+        let requested = Log.uptime
         queue.async {
+            // Audio queues up behind anything still on this queue (finishing
+            // the previous dictation, a cold model load), delaying live text.
+            let waited = Log.uptime - requested
+            if waited > 0.1 {
+                Log.warning(.engine, "Live session waited \(Log.ms(waited)) for the engine queue")
+            }
             self.queueGeneration = generation
             self.pendingError = nil
             self.runningTranscript = ""
             self.pendingSamples.removeAll(keepingCapacity: true)
             do {
+                let wasLoaded = self.loaded && self.context != nil
+                let started = Log.uptime
                 try self.ensureLoaded()
                 guard let context = self.context else { throw StreamingTranscriberError.notLoaded }
                 self.stream?.free()
                 self.stream = try ParakeetStreamSession(context: context)
+                let elapsed = Log.uptime - started
+                if !wasLoaded {
+                    Log.warning(.engine, "Live model wasn't loaded at key press; session ready after \(Log.ms(elapsed))")
+                } else {
+                    Log.debug(.engine, "Live session ready in \(Log.ms(elapsed)) (queue wait \(Log.ms(waited)))")
+                }
             } catch {
                 self.pendingError = error
                 self.setWarm(false)
-                NSLog("Budgie: streaming session failed to start: \(error)")
+                Log.error(.engine, "Live session failed to start: \(error)")
             }
         }
     }
@@ -204,11 +219,14 @@ final class StreamingTranscriber: @unchecked Sendable {
             throw StreamingTranscriberError.modelFileMissing(modelPath)
         }
 
+        let started = Log.uptime
         let library = try ParakeetLibrary(path: libraryPath)
         let context = try ParakeetContext(library: library, modelPath: modelPath)
         self.library = library
         self.context = context
         loaded = true
+        Log.info(.engine, "Live model loaded in \(Log.ms(Log.uptime - started)), "
+            + "\(library.threadDescription)")
         setWarm(true)
     }
 
@@ -237,8 +255,9 @@ final class StreamingTranscriber: @unchecked Sendable {
             while true {
                 let batch = pendingBuffers.takeBatch()
                 if batch.didOverflow {
-                    NSLog(
-                        "Budgie: Live transcription discarded stale audio while CPU load was high; "
+                    Log.warning(
+                        .engine,
+                        "Live transcription discarded stale audio while CPU load was high; "
                             + "keeping latency under one second"
                     )
                 }
@@ -255,7 +274,7 @@ final class StreamingTranscriber: @unchecked Sendable {
             pendingError = error
             pendingSamples.removeAll(keepingCapacity: true)
             pendingBuffers.reset()
-            NSLog("Budgie: streaming chunk failed: \(error)")
+            Log.error(.engine, "Live chunk failed: \(error)")
         }
     }
 
@@ -287,10 +306,9 @@ final class StreamingTranscriber: @unchecked Sendable {
         let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
         let audioDuration = Double(samples.count) / streamFormat.sampleRate
         if elapsed > audioDuration {
-            NSLog(
-                "Budgie: streaming feed lag — %.0f ms inference for %.0f ms audio",
-                elapsed * 1_000,
-                audioDuration * 1_000
+            Log.warning(
+                .engine,
+                "Live feed lag — \(Log.ms(elapsed)) inference for \(Log.ms(audioDuration)) audio"
             )
         }
         appendTranscriptDelta(delta)
@@ -492,9 +510,7 @@ final class ParakeetLibrary {
                 threadLimitApplied = false
             }
             if !threadLimitApplied {
-                NSLog(
-                    "Budgie: parakeet.cpp thread-limit exports unavailable; using library default"
-                )
+                Log.warning(.engine, "parakeet.cpp thread-limit exports unavailable; using library default")
             }
 
             // Assign only after every throwing operation so a failed initializer
@@ -524,6 +540,15 @@ final class ParakeetLibrary {
 
     var configuredThreadCount: Int? {
         numThreads.map { Int($0()) }
+    }
+
+    /// e.g. "4 inference threads of 10 cores", for the log.
+    var threadDescription: String {
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        guard let count = configuredThreadCount else {
+            return "library-default inference threads, \(cores) cores"
+        }
+        return "\(count) inference threads of \(cores) cores"
     }
 
     private static func symbol<T>(_ name: String, from handle: UnsafeMutableRawPointer) throws -> T {

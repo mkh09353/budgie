@@ -185,7 +185,7 @@ private final class MeetingStreamWriter {
             if !heardSound, AudioLevel.normalized(buffer) > 0 { heardSound = true }
             try writer.append(buffer)
         } catch {
-            NSLog("Budgie: meeting audio write failed for \(writer.url.lastPathComponent): \(error)")
+            Log.error(.meeting, "meeting audio write failed for \(writer.url.lastPathComponent): \(error)")
         }
     }
 

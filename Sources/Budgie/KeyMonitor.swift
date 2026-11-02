@@ -55,7 +55,7 @@ final class KeyMonitor {
             callback: callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            NSLog("Budgie: could not create event tap — grant Input Monitoring and relaunch")
+            Log.error(.dictation, "could not create event tap — grant Input Monitoring and relaunch")
             return false
         }
 
@@ -83,6 +83,11 @@ final class KeyMonitor {
     private func handle(type: CGEventType, event: CGEvent) {
         // The system disables a tap if its callback is too slow; just re-enable.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            // Key presses are lost until it's back on, which feels like a
+            // press that didn't start dictation.
+            Log.warning(.dictation, type == .tapDisabledByTimeout
+                ? "event tap disabled by timeout (main thread too slow); re-enabling"
+                : "event tap disabled by user input; re-enabling")
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return
         }
